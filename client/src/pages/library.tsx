@@ -18,14 +18,16 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import { Download, Trash2, FileText, Tag, Plus, X, FolderOpen } from "lucide-react";
+import { Download, Trash2, FileText, Tag, Plus, X, FolderOpen, Brain, RefreshCw } from "lucide-react";
 interface DocumentListItem {
   id: number;
   filename: string;
   originalFilename: string;
   tags: string[];
+  aiKeywords?: string[];
   uploadedAt: string;
   textPreview: string;
+  indexed?: boolean;
 }
 
 export default function LibraryPage() {
@@ -56,6 +58,20 @@ export default function LibraryPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/documents"] });
+    },
+  });
+
+  const reindexMutation = useMutation({
+    mutationFn: async (id: number) => {
+      const res = await apiRequest("POST", `/api/documents/${id}/reindex`);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/documents"] });
+      toast({ title: "Re-indexed successfully" });
+    },
+    onError: () => {
+      toast({ title: "Re-index failed", variant: "destructive" });
     },
   });
 
@@ -130,11 +146,33 @@ export default function LibraryPage() {
                     <FileText className="w-4 h-4 text-primary shrink-0" />
                     <span className="truncate" data-testid={`text-filename-${doc.id}`}>{doc.originalFilename}</span>
                   </CardTitle>
-                  <p className="text-xs text-muted-foreground">
-                    Uploaded {new Date(doc.uploadedAt).toLocaleDateString()}
-                  </p>
+                  <div className="flex items-center gap-2">
+                    <p className="text-xs text-muted-foreground">
+                      Uploaded {new Date(doc.uploadedAt).toLocaleDateString()}
+                    </p>
+                    {doc.indexed ? (
+                      <Badge variant="secondary" className="text-[10px] gap-0.5 h-4 px-1.5">
+                        <Brain className="w-2.5 h-2.5" />
+                        Indexed
+                      </Badge>
+                    ) : (
+                      <Badge variant="outline" className="text-[10px] gap-0.5 h-4 px-1.5 text-yellow-600">
+                        Pending
+                      </Badge>
+                    )}
+                  </div>
                 </div>
                 <div className="flex items-center gap-1">
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    onClick={() => reindexMutation.mutate(doc.id)}
+                    disabled={reindexMutation.isPending}
+                    title="Re-index with AI"
+                    data-testid={`button-reindex-${doc.id}`}
+                  >
+                    <RefreshCw className={`w-4 h-4 ${reindexMutation.isPending ? "animate-spin" : ""}`} />
+                  </Button>
                   <Button
                     size="icon"
                     variant="ghost"

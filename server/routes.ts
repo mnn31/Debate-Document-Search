@@ -37,19 +37,18 @@ const upload = multer({
 });
 
 function cleanupFile(filePath: string) {
-  try {
-    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-  } catch {}
+  try { if (fs.existsSync(filePath)) fs.unlinkSync(filePath); } catch {}
 }
 
 function parseDocxSections(htmlContent: string): Array<{ heading: string; content: string }> {
   const sections: Array<{ heading: string; content: string }> = [];
-  const lines = htmlContent.split(/(?=<h[1-6])/i);
 
-  for (const line of lines) {
-    const headingMatch = line.match(/<h[1-6][^>]*>(.*?)<\/h[1-6]>/i);
+  const parts = htmlContent.split(/(?=<h[1-6])/i);
+
+  for (const part of parts) {
+    const headingMatch = part.match(/<h[1-6][^>]*>(.*?)<\/h[1-6]>/i);
     const heading = headingMatch ? headingMatch[1].replace(/<[^>]*>/g, "").trim() : "";
-    const content = line
+    const content = part
       .replace(/<h[1-6][^>]*>.*?<\/h[1-6]>/gi, "")
       .replace(/<[^>]*>/g, " ")
       .replace(/\s+/g, " ")
@@ -62,10 +61,118 @@ function parseDocxSections(htmlContent: string): Array<{ heading: string; conten
 
   if (sections.length === 0 && htmlContent.trim()) {
     const plainText = htmlContent.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
-    sections.push({ heading: "Document Content", content: plainText });
+    if (plainText) sections.push({ heading: "Document Content", content: plainText });
   }
 
-  return sections;
+  const textLines = htmlContent.replace(/<[^>]*>/g, "\n").split("\n").filter(l => l.trim());
+  const debateSections: Array<{ heading: string; content: string }> = [];
+  let currentHeading = "";
+  let currentContent: string[] = [];
+
+  for (const line of textLines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    const isHeadingLike =
+      (trimmed.length < 80 && /^[A-Z!]/.test(trimmed) && !trimmed.endsWith(".")) ||
+      trimmed.includes("---") ||
+      trimmed.startsWith("1AR") || trimmed.startsWith("1NC") || trimmed.startsWith("2AR") || trimmed.startsWith("2NC") ||
+      /^(Impact|Link|Internal Link|Uniqueness|Turn|Shell|Frontline|Extension|AT:|A2:)/i.test(trimmed);
+
+    if (isHeadingLike && currentContent.length > 0) {
+      debateSections.push({
+        heading: currentHeading,
+        content: currentContent.join(" ").trim(),
+      });
+      currentHeading = trimmed;
+      currentContent = [];
+    } else if (isHeadingLike && currentContent.length === 0) {
+      currentHeading = currentHeading ? `${currentHeading} - ${trimmed}` : trimmed;
+    } else {
+      currentContent.push(trimmed);
+    }
+  }
+
+  if (currentContent.length > 0) {
+    debateSections.push({
+      heading: currentHeading,
+      content: currentContent.join(" ").trim(),
+    });
+  }
+
+  const allSections = [...sections];
+  for (const ds of debateSections) {
+    const isDuplicate = allSections.some(
+      (s) => s.heading === ds.heading || (ds.content.length > 50 && s.content.includes(ds.content.slice(0, 50)))
+    );
+    if (!isDuplicate && ds.content.length > 20) {
+      allSections.push(ds);
+    }
+  }
+
+  return allSections;
+}
+
+async function generateAiKeywords(
+  filename: string,
+  sections: Array<{ heading: string; content: string }>,
+  tags: string[]
+): Promise<string[]> {
+  try {
+    const headings = sections.map((s) => s.heading).filter(Boolean).slice(0, 10).join(", ");
+    const preview = sections.map((s) => s.content).join(" ").slice(0, 500);
+
+    const response = await openai.chat.completions.create({
+      model: "gpt-5-nano",
+      messages: [
+        {
+          role: "user",
+          content: `Generate 25 debate search keywords for this evidence file. Include debate abbreviations (cap good, dedev, heg, nuke war), synonyms, argument types (impact turn, link turn), and topic areas.
+
+File: ${filename}
+Tags: ${tags.join(", ")}
+Headings: ${headings}
+Preview: ${preview}
+
+Return ONLY a JSON array of keyword strings, nothing else.`,
+        },
+      ],
+      max_completion_tokens: 4096,
+    });
+
+    let content = response.choices[0]?.message?.content || "[]";
+    content = content.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+    let keywords: string[] = [];
+    try {
+      const parsed = JSON.parse(content);
+      if (Array.isArray(parsed)) {
+        keywords = parsed;
+      } else if (parsed.keywords && Array.isArray(parsed.keywords)) {
+        keywords = parsed.keywords;
+      }
+    } catch {
+      console.error("Failed to parse AI keywords response:", content.slice(0, 200));
+    }
+    return keywords.map((k: string) => String(k).toLowerCase().trim()).filter(Boolean);
+  } catch (error) {
+    console.error("AI keyword generation error:", error);
+    return [];
+  }
+}
+
+function buildSearchIndex(
+  filename: string,
+  tags: string[],
+  sections: Array<{ heading: string; content: string }>,
+  aiKeywords: string[]
+): string {
+  const parts = [
+    filename.replace(/\.docx$/i, "").replace(/[_-]/g, " "),
+    ...tags,
+    ...sections.map((s) => s.heading),
+    ...aiKeywords,
+  ];
+  return parts.join(" ").toLowerCase();
 }
 
 export async function registerRoutes(
@@ -85,9 +192,6 @@ export async function registerRoutes(
           const parsed = JSON.parse(req.body.tags);
           if (Array.isArray(parsed) && parsed.every((t: any) => typeof t === "string")) {
             tags = parsed;
-          } else {
-            if (req.file) cleanupFile(req.file.path);
-            return res.status(400).json({ error: "Tags must be an array of strings" });
           }
         } catch {
           if (req.file) cleanupFile(req.file.path);
@@ -96,29 +200,44 @@ export async function registerRoutes(
       }
 
       const filePath = req.file.path;
-
       const result = await mammoth.convertToHtml({ path: filePath });
       const htmlContent = result.value;
       const plainText = htmlContent.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+      const parsedSections = parseDocxSections(htmlContent);
 
       const doc = await storage.createDocument({
         filename: req.file.filename,
         originalFilename: req.file.originalname,
         tags,
         textContent: plainText,
+        aiKeywords: [],
+        searchIndex: "",
       });
 
-      const parsedSections = parseDocxSections(htmlContent);
       const sectionData = parsedSections.map((s, i) => ({
         documentId: doc.id,
         heading: s.heading,
         content: s.content,
         sectionIndex: i,
       }));
-
       await storage.createSections(sectionData);
 
-      res.json({ id: doc.id, originalFilename: doc.originalFilename, tags: doc.tags, uploadedAt: doc.uploadedAt });
+      res.json({
+        id: doc.id,
+        originalFilename: doc.originalFilename,
+        tags: doc.tags,
+        uploadedAt: doc.uploadedAt,
+        indexing: true,
+      });
+
+      generateAiKeywords(req.file.originalname, parsedSections, tags).then(async (aiKeywords) => {
+        const searchIndex = buildSearchIndex(req.file!.originalname, tags, parsedSections, aiKeywords);
+        await storage.updateDocumentAiData(doc.id, aiKeywords, searchIndex);
+        console.log(`Indexed document ${doc.id} (${req.file!.originalname}) with ${aiKeywords.length} AI keywords`);
+      }).catch((err) => {
+        console.error(`Failed to index document ${doc.id}:`, err);
+      });
+
     } catch (error: any) {
       if (req.file) cleanupFile(req.file.path);
       console.error("Upload error:", error);
@@ -134,8 +253,10 @@ export async function registerRoutes(
         filename: d.filename,
         originalFilename: d.originalFilename,
         tags: d.tags,
+        aiKeywords: d.aiKeywords,
         uploadedAt: d.uploadedAt,
         textPreview: d.textContent.slice(0, 200),
+        indexed: d.aiKeywords.length > 0,
       }));
       res.json(lightweight);
     } catch (error: any) {
@@ -147,7 +268,6 @@ export async function registerRoutes(
     try {
       const doc = await storage.getDocument(parseInt(req.params.id));
       if (!doc) return res.status(404).json({ error: "Document not found" });
-
       const sections = await storage.getSectionsByDocumentId(doc.id);
       res.json({ ...doc, sections });
     } catch (error: any) {
@@ -159,12 +279,10 @@ export async function registerRoutes(
     try {
       const doc = await storage.getDocument(parseInt(req.params.id));
       if (!doc) return res.status(404).json({ error: "Document not found" });
-
       const filePath = path.join(uploadDir, doc.filename);
       if (!fs.existsSync(filePath)) {
         return res.status(404).json({ error: "File not found on disk" });
       }
-
       res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
       res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(doc.originalFilename)}"`);
       res.sendFile(filePath);
@@ -181,6 +299,12 @@ export async function registerRoutes(
       }
       const updated = await storage.updateDocumentTags(parseInt(req.params.id), tags);
       if (!updated) return res.status(404).json({ error: "Document not found" });
+
+      const sections = await storage.getSectionsByDocumentId(updated.id);
+      const parsedSections = sections.map((s) => ({ heading: s.heading, content: s.content }));
+      const searchIndex = buildSearchIndex(updated.originalFilename, tags, parsedSections, updated.aiKeywords);
+      await storage.updateDocumentAiData(updated.id, updated.aiKeywords, searchIndex);
+
       res.json(updated);
     } catch (error: any) {
       res.status(500).json({ error: error.message || "Failed to update tags" });
@@ -191,10 +315,7 @@ export async function registerRoutes(
     try {
       const doc = await storage.getDocument(parseInt(req.params.id));
       if (!doc) return res.status(404).json({ error: "Document not found" });
-
-      const filePath = path.join(uploadDir, doc.filename);
-      cleanupFile(filePath);
-
+      cleanupFile(path.join(uploadDir, doc.filename));
       await storage.deleteDocument(doc.id);
       res.json({ success: true });
     } catch (error: any) {
@@ -210,127 +331,193 @@ export async function registerRoutes(
       }
 
       const searchQuery = query.trim();
-      const allDocs = await storage.getAllDocuments();
 
-      if (allDocs.length === 0) {
-        return res.json({ results: [], aiEnhanced: false });
+      const dbResults = await storage.fullTextSearch(searchQuery);
+
+      const resultsWithSections = await Promise.all(
+        dbResults.map(async ({ doc, rank }) => {
+          const sections = await storage.getSectionsByDocumentId(doc.id);
+
+          const queryWords = searchQuery.toLowerCase().split(/\s+/);
+          const matchingSections = sections.filter((s) =>
+            queryWords.some(
+              (w) =>
+                s.heading.toLowerCase().includes(w) ||
+                s.content.toLowerCase().includes(w)
+            )
+          );
+
+          return {
+            document: {
+              id: doc.id,
+              filename: doc.filename,
+              originalFilename: doc.originalFilename,
+              tags: doc.tags,
+              aiKeywords: doc.aiKeywords,
+              uploadedAt: doc.uploadedAt,
+            },
+            matchingSections: matchingSections.length > 0 ? matchingSections : sections.slice(0, 2),
+            rank,
+            aiSummary: "",
+            sectionHint: matchingSections[0]?.heading || sections[0]?.heading || "",
+          };
+        })
+      );
+
+      res.json({
+        results: resultsWithSections,
+        aiEnhanced: false,
+        query: searchQuery,
+      });
+    } catch (error: any) {
+      console.error("Search error:", error);
+      res.status(500).json({ error: error.message || "Search failed" });
+    }
+  });
+
+  app.post("/api/search/ai-enhance", async (req, res) => {
+    try {
+      const { query, documentIds } = req.body;
+      if (!query || !Array.isArray(documentIds) || documentIds.length === 0) {
+        return res.status(400).json({ error: "Query and documentIds required" });
       }
 
-      const dbResults = await storage.searchDocuments(searchQuery);
+      const docs = await Promise.all(
+        documentIds.slice(0, 10).map(async (id: number) => {
+          const doc = await storage.getDocument(id);
+          if (!doc) return null;
+          const sections = await storage.getSectionsByDocumentId(id);
+          return { doc, sections };
+        })
+      );
 
-      const allDocSummaries = await Promise.all(
-        allDocs.slice(0, 25).map(async (doc) => {
+      const validDocs = docs.filter(Boolean) as Array<{ doc: any; sections: any[] }>;
+
+      const docSummary = validDocs.map((d) => {
+        const sectionText = d.sections
+          .map((s: any) => `[${s.heading}]: ${s.content.slice(0, 200)}`)
+          .slice(0, 8)
+          .join("\n");
+        return `ID:${d.doc.id} | ${d.doc.originalFilename} | Tags: ${d.doc.tags.join(", ")}\n${sectionText}`;
+      }).join("\n---\n");
+
+      const response = await openai.chat.completions.create({
+        model: "gpt-5-nano",
+        messages: [
+          {
+            role: "system",
+            content: `You are a Public Forum Debate evidence assistant. For each document, provide a ONE sentence summary explaining what content is relevant to the search query. Be specific about the debate argument, not generic. Focus on what a debater needs to know to decide if this file helps them right now.
+
+Return ONLY a JSON object (no explanation) with "summaries": array of {"id": number, "summary": string, "sectionHint": string}`,
+          },
+          {
+            role: "user",
+            content: `Search: "${query}"\n\nDocuments:\n${docSummary}`,
+          },
+        ],
+        max_completion_tokens: 8192,
+      });
+
+      let content = response.choices[0]?.message?.content || "{}";
+      content = content.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+      let summaries: Record<number, { summary: string; sectionHint: string }> = {};
+      try {
+        const parsed = JSON.parse(content);
+        const arr = parsed.summaries || parsed.results || [];
+        for (const item of arr) {
+          summaries[item.id] = { summary: item.summary, sectionHint: item.sectionHint || "" };
+        }
+      } catch {}
+
+      res.json({ summaries });
+    } catch (error: any) {
+      console.error("AI enhance error:", error);
+      res.status(500).json({ error: "AI enhancement failed" });
+    }
+  });
+
+  app.post("/api/search/semantic", async (req, res) => {
+    try {
+      const { query } = req.body;
+      if (!query || typeof query !== "string") {
+        return res.status(400).json({ error: "Query required" });
+      }
+
+      const allDocs = await storage.getAllDocuments();
+      if (allDocs.length === 0) {
+        return res.json({ results: [] });
+      }
+
+      const docSummaries = await Promise.all(
+        allDocs.slice(0, 30).map(async (doc) => {
           const sections = await storage.getSectionsByDocumentId(doc.id);
           return {
             id: doc.id,
             filename: doc.originalFilename,
             tags: doc.tags,
-            sections: sections.map((s) => `[${s.heading}]: ${s.content.slice(0, 200)}`).join("\n"),
-            dbMatch: dbResults.some((r) => r.id === doc.id),
+            aiKeywords: doc.aiKeywords.slice(0, 10),
+            headings: sections.map((s) => s.heading).filter(Boolean).slice(0, 8),
+            preview: doc.textContent.slice(0, 200),
           };
         })
       );
 
+      const response = await openai.chat.completions.create({
+        model: "gpt-5-nano",
+        messages: [
+          {
+            role: "system",
+            content: `You are a Public Forum Debate search engine. A debater is searching for evidence. Find ALL relevant documents from their library. Think about:
+- Synonyms (dedev = degrowth = economic decline good)
+- Arguments that RESPOND to the search concept
+- Impact chains that INCLUDE the searched concept
+- Related debate terminology
+
+Return ONLY JSON (no explanation): {"results": [{"id": number, "relevance": "one sentence", "sectionHint": "section name"}]}
+Only include truly relevant docs. Order by relevance.`,
+          },
+          {
+            role: "user",
+            content: `Search: "${query}"\n\nLibrary:\n${docSummaries.map((d) => `ID:${d.id}|${d.filename}|Tags:${d.tags.join(",")}|Keywords:${d.aiKeywords.join(",")}|Headings:${d.headings.join(",")}`).join("\n")}`,
+          },
+        ],
+        max_completion_tokens: 8192,
+      });
+
+      let content = response.choices[0]?.message?.content || "{}";
+      content = content.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+      let aiResults: Array<{ id: number; relevance: string; sectionHint: string }> = [];
       try {
-        const aiResponse = await openai.chat.completions.create({
-          model: "gpt-5-nano",
-          messages: [
-            {
-              role: "system",
-              content: `You are a Public Forum Debate evidence search assistant. The user needs to find arguments in their evidence files FAST during a debate round. Given a search query and documents, identify ALL relevant documents. Think about:
-- Synonyms and related concepts (dedev = degrowth = economic decline good)
-- Debate-specific terminology and impact chains
-- Arguments that respond to or counter the searched concept
-- Documents that discuss the same topic from any angle
+        const parsed = JSON.parse(content);
+        aiResults = parsed.results || [];
+      } catch {}
 
-Return a JSON object with a "results" array. Each result has:
-- "id": document id number
-- "relevance": ONE sentence explaining what in this document relates to the search query. Be specific about the argument, not generic.
-- "sectionHint": which section heading to look at
-
-Only include truly relevant documents. Rank by relevance (most relevant first).`,
-            },
-            {
-              role: "user",
-              content: `Search: "${searchQuery}"\n\nDocuments:\n${allDocSummaries.map((d) => `ID:${d.id} | File: ${d.filename} | Tags: ${d.tags.join(", ")}${d.dbMatch ? " [KEYWORD MATCH]" : ""}\n${d.sections}`).join("\n---\n")}`,
-            },
-          ],
-          response_format: { type: "json_object" },
-          max_completion_tokens: 1500,
-        });
-
-        const aiContent = aiResponse.choices[0]?.message?.content || "{}";
-        let aiResults: Array<{ id: number; relevance: string; sectionHint: string }> = [];
-        try {
-          const parsed = JSON.parse(aiContent);
-          aiResults = parsed.results || parsed.documents || parsed.matches || [];
-        } catch {
-          aiResults = [];
-        }
-
-        if (aiResults.length === 0 && dbResults.length > 0) {
-          const results = dbResults.map((doc) => ({
+      const enrichedResults = [];
+      for (const aiResult of aiResults) {
+        const doc = allDocs.find((d) => d.id === aiResult.id);
+        if (doc) {
+          const sections = await storage.getSectionsByDocumentId(doc.id);
+          enrichedResults.push({
             document: {
               id: doc.id,
               filename: doc.filename,
               originalFilename: doc.originalFilename,
               tags: doc.tags,
+              aiKeywords: doc.aiKeywords,
               uploadedAt: doc.uploadedAt,
             },
-            matchingSections: doc.matchingSections,
-            aiSummary: "Matches your search query based on keyword match.",
-            sectionHint: doc.matchingSections[0]?.heading || "",
-          }));
-          return res.json({ results, aiEnhanced: false });
+            matchingSections: sections.slice(0, 3),
+            rank: 0,
+            aiSummary: aiResult.relevance,
+            sectionHint: aiResult.sectionHint,
+          });
         }
-
-        const enrichedResults = [];
-        for (const aiResult of aiResults) {
-          const doc = allDocs.find((d) => d.id === aiResult.id);
-          if (doc) {
-            const dbMatch = dbResults.find((r) => r.id === doc.id);
-            const sections = dbMatch
-              ? dbMatch.matchingSections
-              : await storage.getSectionsByDocumentId(doc.id);
-
-            enrichedResults.push({
-              document: {
-                id: doc.id,
-                filename: doc.filename,
-                originalFilename: doc.originalFilename,
-                tags: doc.tags,
-                uploadedAt: doc.uploadedAt,
-              },
-              matchingSections: sections,
-              aiSummary: aiResult.relevance,
-              sectionHint: aiResult.sectionHint,
-            });
-          }
-        }
-
-        return res.json({ results: enrichedResults, aiEnhanced: true });
-      } catch (aiError) {
-        console.error("AI search error:", aiError);
-        if (dbResults.length > 0) {
-          const results = dbResults.map((doc) => ({
-            document: {
-              id: doc.id,
-              filename: doc.filename,
-              originalFilename: doc.originalFilename,
-              tags: doc.tags,
-              uploadedAt: doc.uploadedAt,
-            },
-            matchingSections: doc.matchingSections,
-            aiSummary: "Matches your search query.",
-            sectionHint: doc.matchingSections[0]?.heading || "",
-          }));
-          return res.json({ results, aiEnhanced: false });
-        }
-        return res.json({ results: [], aiEnhanced: false });
       }
+
+      res.json({ results: enrichedResults });
     } catch (error: any) {
-      console.error("Search error:", error);
-      res.status(500).json({ error: error.message || "Search failed" });
+      console.error("Semantic search error:", error);
+      res.status(500).json({ error: "Semantic search failed" });
     }
   });
 
@@ -358,6 +545,7 @@ Only include truly relevant documents. Rank by relevance (most relevant first).`
             id: doc.id,
             filename: doc.originalFilename,
             tags: doc.tags,
+            aiKeywords: doc.aiKeywords.slice(0, 10),
             sectionHeadings: sections.map((s) => s.heading).filter(Boolean),
             contentPreview: doc.textContent.slice(0, 300),
           };
@@ -369,31 +557,26 @@ Only include truly relevant documents. Rank by relevance (most relevant first).`
         messages: [
           {
             role: "system",
-            content: `You are a Public Forum Debate analyst. The user has uploaded their opponent's case. Analyze it to:
-1. Extract the key arguments and the impact chain (e.g., "Trade war -> Economic decline -> Nuclear war -> Extinction")
-2. For each argument/claim/impact, find responsive evidence from the user's evidence library.
+            content: `You are a Public Forum Debate analyst. Analyze the opponent's case and find responses from the user's evidence library.
 
-Return a JSON object with:
-- "arguments": array of objects with "claim" (the opponent's argument) and "impactChain" (the link chain)  
-- "responses": array of objects with "opponentClaim" (what opponent argues), "responseDocId" (document id from library), "responseFilename" (filename), "explanation" (one sentence on how this document responds to the opponent's claim), "sectionHint" (which section to look at)
+Return JSON:
+- "arguments": [{"claim": "argument description", "impactChain": "step1 -> step2 -> step3"}]
+- "responses": [{"opponentClaim": "what they argue", "responseDocId": number, "responseFilename": "name", "explanation": "one sentence", "sectionHint": "section"}]
 
-Only include responses where you're confident there's relevant evidence. Be specific about debate arguments.`,
+Be specific. Only include confident matches. Return ONLY JSON, no explanation.`,
           },
           {
             role: "user",
-            content: `OPPONENT'S CASE:\n${plainText.slice(0, 4000)}\n\nMY EVIDENCE LIBRARY:\n${docSummaries.map((d) => `ID:${d.id} | ${d.filename} | Tags: ${d.tags.join(", ")} | Sections: ${d.sectionHeadings.join(", ")} | Preview: ${d.contentPreview}`).join("\n")}`,
+            content: `OPPONENT'S CASE:\n${plainText.slice(0, 4000)}\n\nMY EVIDENCE:\n${docSummaries.map((d) => `ID:${d.id}|${d.filename}|Tags:${d.tags.join(",")}|Keywords:${d.aiKeywords.join(",")}|Sections:${d.sectionHeadings.join(",")}`).join("\n")}`,
           },
         ],
-        response_format: { type: "json_object" },
-        max_completion_tokens: 2048,
+        max_completion_tokens: 8192,
       });
 
-      const aiContent = aiResponse.choices[0]?.message?.content || "{}";
+      let aiContent = aiResponse.choices[0]?.message?.content || "{}";
+      aiContent = aiContent.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
       let parsed: any = {};
-      try {
-        parsed = JSON.parse(aiContent);
-      } catch {}
-
+      try { parsed = JSON.parse(aiContent); } catch {}
       cleanupFile(filePath);
 
       res.json({
@@ -405,6 +588,23 @@ Only include responses where you're confident there's relevant evidence. Be spec
       console.error("Analyze error:", error);
       if (req.file) cleanupFile(req.file.path);
       res.status(500).json({ error: error.message || "Analysis failed" });
+    }
+  });
+
+  app.post("/api/documents/:id/reindex", async (req, res) => {
+    try {
+      const doc = await storage.getDocument(parseInt(req.params.id));
+      if (!doc) return res.status(404).json({ error: "Document not found" });
+
+      const sections = await storage.getSectionsByDocumentId(doc.id);
+      const parsedSections = sections.map((s) => ({ heading: s.heading, content: s.content }));
+      const aiKeywords = await generateAiKeywords(doc.originalFilename, parsedSections, doc.tags);
+      const searchIndex = buildSearchIndex(doc.originalFilename, doc.tags, parsedSections, aiKeywords);
+      await storage.updateDocumentAiData(doc.id, aiKeywords, searchIndex);
+
+      res.json({ success: true, keywords: aiKeywords.length });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message || "Reindex failed" });
     }
   });
 

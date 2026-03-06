@@ -23,6 +23,8 @@ export const documents = pgTable("documents", {
   originalFilename: text("original_filename").notNull(),
   tags: text("tags").array().notNull().default(sql`'{}'::text[]`),
   textContent: text("text_content").notNull().default(""),
+  aiKeywords: text("ai_keywords").array().notNull().default(sql`'{}'::text[]`),
+  searchIndex: text("search_index").notNull().default(""),
   uploadedAt: timestamp("uploaded_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 });
 
