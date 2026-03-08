@@ -109,6 +109,14 @@ export class DatabaseStorage implements IStorage {
       sql`EXISTS (SELECT 1 FROM unnest(${documents.aiKeywords}) AS kw WHERE LOWER(kw) LIKE ${pattern})`,
     ]);
 
+    const fullQuery = query.toLowerCase().replace(/[_-]/g, " ");
+    const fullQueryPattern = `%${fullQuery}%`;
+
+    const filenameMatchCount = searchTerms.map((term) => {
+      const p = `%${term}%`;
+      return sql`CASE WHEN LOWER(REPLACE(REPLACE(${documents.originalFilename}, '_', ' '), '-', ' ')) LIKE ${p} THEN 1 ELSE 0 END`;
+    }).reduce((acc, curr) => sql`${acc} + ${curr}`);
+
     const rankExpr = sql<number>`(
       ${searchTerms.map((term) => {
         const p = `%${term}%`;
@@ -120,6 +128,10 @@ export class DatabaseStorage implements IStorage {
           CASE WHEN LOWER(${documents.textContent}) LIKE ${p} THEN 10 ELSE 0 END
         )`;
       }).reduce((acc, curr) => sql`${acc} + ${curr}`)}
+      + (${filenameMatchCount}) * (${filenameMatchCount}) * 50
+      + CASE WHEN LOWER(REPLACE(REPLACE(${documents.originalFilename}, '_', ' '), '-', ' ')) LIKE ${fullQueryPattern} THEN 300 ELSE 0 END
+      + CASE WHEN EXISTS (SELECT 1 FROM unnest(${documents.tags}) AS tag WHERE LOWER(tag) LIKE ${fullQueryPattern}) THEN 200 ELSE 0 END
+      + CASE WHEN EXISTS (SELECT 1 FROM unnest(${documents.aiKeywords}) AS kw WHERE LOWER(kw) LIKE ${fullQueryPattern}) THEN 150 ELSE 0 END
     )`;
 
     const results = await db

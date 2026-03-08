@@ -12,6 +12,29 @@ const openai = new OpenAI({
   baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
 });
 
+const DEBATE_TERMINOLOGY = `
+Public Forum Debate terminology you MUST understand:
+- UQ/U = Uniqueness (current state of the world regarding a specific issue)
+- L = Link (how the resolution connects to a point)
+- IL = Internal Link (how one point connects to another in a chain)
+- ! = Impact (terminal impact or final consequence)
+- NUQ = Nonunique (the impact is already happening regardless)
+- NL = No Link (the resolution doesn't actually cause this)
+- L/T = Link Turn (the resolution actually does the OPPOSITE of what opponent claims)
+- N! = No Impact (even if the link is true, it doesn't matter)
+- !/T = Impact Turn (the impact is actually GOOD, not bad)
+- Dedev/degrowth = arguments that economic decline/degrowth is good
+- Cap good/bad = capitalism is good/bad
+- Heg = hegemony (US global military/political dominance)
+- Prolif = proliferation (nuclear weapons spreading)
+- Nuke war = nuclear war
+- SCS = South China Sea
+- China rise = China's increasing power/influence globally
+- Soft power = diplomatic/cultural influence (vs hard power = military)
+- Diversionary war = leaders start wars to distract from domestic problems
+- Interdependence = economic ties between nations
+`;
+
 const uploadDir = path.resolve("uploads");
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
@@ -77,7 +100,7 @@ function parseDocxSections(htmlContent: string): Array<{ heading: string; conten
       (trimmed.length < 80 && /^[A-Z!]/.test(trimmed) && !trimmed.endsWith(".")) ||
       trimmed.includes("---") ||
       trimmed.startsWith("1AR") || trimmed.startsWith("1NC") || trimmed.startsWith("2AR") || trimmed.startsWith("2NC") ||
-      /^(Impact|Link|Internal Link|Uniqueness|Turn|Shell|Frontline|Extension|AT:|A2:)/i.test(trimmed);
+      /^(Impact|Link|Internal Link|Uniqueness|Turn|Shell|Frontline|Extension|AT:|A2:|Contention)/i.test(trimmed);
 
     if (isHeadingLike && currentContent.length > 0) {
       debateSections.push({
@@ -113,50 +136,80 @@ function parseDocxSections(htmlContent: string): Array<{ heading: string; conten
   return allSections;
 }
 
-async function generateAiKeywords(
+function parseAiJson(raw: string): any {
+  let content = raw.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+  try {
+    return JSON.parse(content);
+  } catch {
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      try { return JSON.parse(jsonMatch[0]); } catch {}
+    }
+    const arrMatch = content.match(/\[[\s\S]*\]/);
+    if (arrMatch) {
+      try { return JSON.parse(arrMatch[0]); } catch {}
+    }
+    return null;
+  }
+}
+
+async function generateAiKeywordsAndTags(
   filename: string,
   sections: Array<{ heading: string; content: string }>,
-  tags: string[]
-): Promise<string[]> {
+  existingTags: string[]
+): Promise<{ keywords: string[]; tags: string[] }> {
   try {
-    const headings = sections.map((s) => s.heading).filter(Boolean).slice(0, 10).join(", ");
-    const preview = sections.map((s) => s.content).join(" ").slice(0, 500);
+    const headings = sections.map((s) => s.heading).filter(Boolean).slice(0, 12).join(", ");
+    const preview = sections.map((s) => s.content).join(" ").slice(0, 800);
 
     const response = await openai.chat.completions.create({
       model: "gpt-5-nano",
       messages: [
         {
           role: "user",
-          content: `Generate 25 debate search keywords for this evidence file. Include debate abbreviations (cap good, dedev, heg, nuke war), synonyms, argument types (impact turn, link turn), and topic areas.
+          content: `You are a Public Forum Debate evidence indexer. ${DEBATE_TERMINOLOGY}
+
+Analyze this debate file and return ONLY a JSON object with two arrays:
+1. "keywords": 30 search keywords including debate abbreviations, synonyms, concepts this file responds to/turns, argument types, and related terminology. Think about every way a debater might search for this.
+2. "tags": 5-8 short descriptive tags for categorizing this file (e.g. "cap good", "warming impact turn", "china heg", "dedev", "econ decline good")
 
 File: ${filename}
-Tags: ${tags.join(", ")}
+Existing tags: ${existingTags.join(", ") || "none"}
 Headings: ${headings}
-Preview: ${preview}
+Content: ${preview}
 
-Return ONLY a JSON array of keyword strings, nothing else.`,
+Return ONLY the JSON object, nothing else.`,
         },
       ],
       max_completion_tokens: 4096,
     });
 
-    let content = response.choices[0]?.message?.content || "[]";
-    content = content.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-    let keywords: string[] = [];
-    try {
-      const parsed = JSON.parse(content);
-      if (Array.isArray(parsed)) {
-        keywords = parsed;
-      } else if (parsed.keywords && Array.isArray(parsed.keywords)) {
-        keywords = parsed.keywords;
-      }
-    } catch {
-      console.error("Failed to parse AI keywords response:", content.slice(0, 200));
+    const content = response.choices[0]?.message?.content || "{}";
+    const parsed = parseAiJson(content);
+    if (!parsed) {
+      console.error("Failed to parse AI response:", content.slice(0, 200));
+      return { keywords: [], tags: [] };
     }
-    return keywords.map((k: string) => String(k).toLowerCase().trim()).filter(Boolean);
+
+    let keywords: string[] = [];
+    if (Array.isArray(parsed)) {
+      keywords = parsed;
+    } else if (Array.isArray(parsed.keywords)) {
+      keywords = parsed.keywords;
+    }
+
+    let tags: string[] = [];
+    if (Array.isArray(parsed.tags)) {
+      tags = parsed.tags;
+    }
+
+    return {
+      keywords: keywords.map((k: string) => String(k).toLowerCase().trim()).filter(Boolean),
+      tags: tags.map((t: string) => String(t).toLowerCase().trim()).filter(Boolean),
+    };
   } catch (error) {
     console.error("AI keyword generation error:", error);
-    return [];
+    return { keywords: [], tags: [] };
   }
 }
 
@@ -230,10 +283,13 @@ export async function registerRoutes(
         indexing: true,
       });
 
-      generateAiKeywords(req.file.originalname, parsedSections, tags).then(async (aiKeywords) => {
-        const searchIndex = buildSearchIndex(req.file!.originalname, tags, parsedSections, aiKeywords);
-        await storage.updateDocumentAiData(doc.id, aiKeywords, searchIndex);
-        console.log(`Indexed document ${doc.id} (${req.file!.originalname}) with ${aiKeywords.length} AI keywords`);
+      const fileRef = req.file;
+      generateAiKeywordsAndTags(fileRef.originalname, parsedSections, tags).then(async ({ keywords, tags: aiTags }) => {
+        const mergedTags = [...new Set([...tags, ...aiTags])];
+        const searchIndex = buildSearchIndex(fileRef.originalname, mergedTags, parsedSections, keywords);
+        await storage.updateDocumentTags(doc.id, mergedTags);
+        await storage.updateDocumentAiData(doc.id, keywords, searchIndex);
+        console.log(`Indexed document ${doc.id} (${fileRef.originalname}) with ${keywords.length} keywords and ${aiTags.length} auto-tags`);
       }).catch((err) => {
         console.error(`Failed to index document ${doc.id}:`, err);
       });
@@ -331,7 +387,6 @@ export async function registerRoutes(
       }
 
       const searchQuery = query.trim();
-
       const dbResults = await storage.fullTextSearch(searchQuery);
 
       const resultsWithSections = await Promise.all(
@@ -405,29 +460,33 @@ export async function registerRoutes(
         model: "gpt-5-nano",
         messages: [
           {
-            role: "system",
-            content: `You are a Public Forum Debate evidence assistant. For each document, provide a ONE sentence summary explaining what content is relevant to the search query. Be specific about the debate argument, not generic. Focus on what a debater needs to know to decide if this file helps them right now.
-
-Return ONLY a JSON object (no explanation) with "summaries": array of {"id": number, "summary": string, "sectionHint": string}`,
-          },
-          {
             role: "user",
-            content: `Search: "${query}"\n\nDocuments:\n${docSummary}`,
+            content: `${DEBATE_TERMINOLOGY}
+
+You are a PF debate evidence assistant. For each document below, write ONE sentence explaining how it's relevant to the search query. Be specific about the debate argument. Focus on what helps a debater decide if this file is useful RIGHT NOW.
+
+Search: "${query}"
+
+Documents:
+${docSummary}
+
+Return ONLY JSON: {"summaries": [{"id": number, "summary": "sentence", "sectionHint": "section name"}]}`,
           },
         ],
         max_completion_tokens: 8192,
       });
 
-      let content = response.choices[0]?.message?.content || "{}";
-      content = content.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+      const content = response.choices[0]?.message?.content || "{}";
+      const parsed = parseAiJson(content);
       let summaries: Record<number, { summary: string; sectionHint: string }> = {};
-      try {
-        const parsed = JSON.parse(content);
-        const arr = parsed.summaries || parsed.results || [];
+      if (parsed) {
+        const arr = parsed.summaries || parsed.results || (Array.isArray(parsed) ? parsed : []);
         for (const item of arr) {
-          summaries[item.id] = { summary: item.summary, sectionHint: item.sectionHint || "" };
+          if (item?.id) {
+            summaries[item.id] = { summary: item.summary || "", sectionHint: item.sectionHint || "" };
+          }
         }
-      } catch {}
+      }
 
       res.json({ summaries });
     } catch (error: any) {
@@ -455,7 +514,7 @@ Return ONLY a JSON object (no explanation) with "summaries": array of {"id": num
             id: doc.id,
             filename: doc.originalFilename,
             tags: doc.tags,
-            aiKeywords: doc.aiKeywords.slice(0, 10),
+            aiKeywords: doc.aiKeywords.slice(0, 15),
             headings: sections.map((s) => s.heading).filter(Boolean).slice(0, 8),
             preview: doc.textContent.slice(0, 200),
           };
@@ -466,31 +525,29 @@ Return ONLY a JSON object (no explanation) with "summaries": array of {"id": num
         model: "gpt-5-nano",
         messages: [
           {
-            role: "system",
-            content: `You are a Public Forum Debate search engine. A debater is searching for evidence. Find ALL relevant documents from their library. Think about:
-- Synonyms (dedev = degrowth = economic decline good)
-- Arguments that RESPOND to the search concept
-- Impact chains that INCLUDE the searched concept
-- Related debate terminology
-
-Return ONLY JSON (no explanation): {"results": [{"id": number, "relevance": "one sentence", "sectionHint": "section name"}]}
-Only include truly relevant docs. Order by relevance.`,
-          },
-          {
             role: "user",
-            content: `Search: "${query}"\n\nLibrary:\n${docSummaries.map((d) => `ID:${d.id}|${d.filename}|Tags:${d.tags.join(",")}|Keywords:${d.aiKeywords.join(",")}|Headings:${d.headings.join(",")}`).join("\n")}`,
+            content: `${DEBATE_TERMINOLOGY}
+
+You are a PF debate search engine. Find ALL relevant documents for this search. Think about synonyms (dedev=degrowth, cap=capitalism, heg=hegemony, china rise=china heg), arguments that RESPOND TO the concept, impact chains, and debate abbreviations.
+
+Search: "${query}"
+
+Library:
+${docSummaries.map((d) => `ID:${d.id}|${d.filename}|Tags:${d.tags.join(",")}|Keywords:${d.aiKeywords.join(",")}|Headings:${d.headings.join(",")}`).join("\n")}
+
+Return ONLY JSON: {"results": [{"id": number, "relevance": "one sentence", "sectionHint": "section name"}]}
+Order by relevance. Only include truly relevant docs.`,
           },
         ],
         max_completion_tokens: 8192,
       });
 
-      let content = response.choices[0]?.message?.content || "{}";
-      content = content.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+      const content = response.choices[0]?.message?.content || "{}";
+      const parsed = parseAiJson(content);
       let aiResults: Array<{ id: number; relevance: string; sectionHint: string }> = [];
-      try {
-        const parsed = JSON.parse(content);
-        aiResults = parsed.results || [];
-      } catch {}
+      if (parsed) {
+        aiResults = parsed.results || (Array.isArray(parsed) ? parsed : []);
+      }
 
       const enrichedResults = [];
       for (const aiResult of aiResults) {
@@ -535,7 +592,7 @@ Only include truly relevant docs. Order by relevance.`,
       const allDocs = await storage.getAllDocuments();
       if (allDocs.length === 0) {
         cleanupFile(filePath);
-        return res.json({ arguments: [], responses: [] });
+        return res.json({ contentions: [], responses: [] });
       }
 
       const docSummaries = await Promise.all(
@@ -545,9 +602,9 @@ Only include truly relevant docs. Order by relevance.`,
             id: doc.id,
             filename: doc.originalFilename,
             tags: doc.tags,
-            aiKeywords: doc.aiKeywords.slice(0, 10),
-            sectionHeadings: sections.map((s) => s.heading).filter(Boolean),
-            contentPreview: doc.textContent.slice(0, 300),
+            aiKeywords: doc.aiKeywords.slice(0, 15),
+            sectionHeadings: sections.map((s) => s.heading).filter(Boolean).slice(0, 10),
+            contentPreview: doc.textContent.slice(0, 400),
           };
         })
       );
@@ -556,32 +613,84 @@ Only include truly relevant docs. Order by relevance.`,
         model: "gpt-5-nano",
         messages: [
           {
-            role: "system",
-            content: `You are a Public Forum Debate analyst. Analyze the opponent's case and find responses from the user's evidence library.
-
-Return JSON:
-- "arguments": [{"claim": "argument description", "impactChain": "step1 -> step2 -> step3"}]
-- "responses": [{"opponentClaim": "what they argue", "responseDocId": number, "responseFilename": "name", "explanation": "one sentence", "sectionHint": "section"}]
-
-Be specific. Only include confident matches. Return ONLY JSON, no explanation.`,
-          },
-          {
             role: "user",
-            content: `OPPONENT'S CASE:\n${plainText.slice(0, 4000)}\n\nMY EVIDENCE:\n${docSummaries.map((d) => `ID:${d.id}|${d.filename}|Tags:${d.tags.join(",")}|Keywords:${d.aiKeywords.join(",")}|Sections:${d.sectionHeadings.join(",")}`).join("\n")}`,
+            content: `${DEBATE_TERMINOLOGY}
+
+You are a PF debate case analyzer. Break down this opponent's case into its argument structure, then find responses from my evidence library.
+
+STEP 1: Break down each contention into its structure:
+- What is the Uniqueness (UQ)? What's the current state of the world?
+- What is the Link (L)? How does the resolution connect?
+- What are the Internal Links (IL)? The chain of consequences?
+- What is the terminal Impact (!)? The final bad/good thing?
+
+STEP 2: For EACH part of their argument chain, find responses from my evidence library. Types of responses:
+- NUQ (Nonunique): Evidence showing the impact is already happening
+- NL (No Link): Evidence showing the resolution doesn't cause this
+- L/T (Link Turn): Evidence showing the resolution actually does the OPPOSITE
+- N! (No Impact): Evidence showing the consequence doesn't actually matter
+- !/T (Impact Turn): Evidence showing the "bad" thing is actually GOOD
+- General responses: Any evidence that challenges their argument
+
+OPPONENT'S CASE:
+${plainText.slice(0, 5000)}
+
+MY EVIDENCE LIBRARY:
+${docSummaries.map((d) => `ID:${d.id}|${d.filename}|Tags:${d.tags.join(",")}|Keywords:${d.aiKeywords.join(",")}|Sections:${d.sectionHeadings.join(",")}`).join("\n")}
+
+Return ONLY JSON with this structure:
+{
+  "contentions": [
+    {
+      "name": "Contention name/title",
+      "summary": "One sentence summary",
+      "structure": {
+        "uniqueness": "What they claim about the status quo",
+        "link": "How the resolution connects",
+        "internalLinks": ["chain step 1", "chain step 2"],
+        "impact": "Terminal impact"
+      }
+    }
+  ],
+  "responses": [
+    {
+      "targetContention": "Which contention this responds to",
+      "responseType": "NUQ|NL|L/T|N!|!/T|General",
+      "responseLabel": "Short label like 'Link Turn - Econ Growth'",
+      "explanation": "One sentence explanation of how this responds",
+      "contentionIndex": 0-based index matching the contentions array,
+      "docId": number,
+      "docFilename": "filename",
+      "sectionHint": "which section to look at"
+    }
+  ]
+}
+
+IMPORTANT: contentionIndex MUST be a 0-based integer matching the contentions array index. If a response applies to contention 1, use contentionIndex: 0. Only use real docId values from the MY EVIDENCE LIBRARY list above. If no matching doc exists, use docId: 0 and docFilename: "No match in library".`,
           },
         ],
         max_completion_tokens: 8192,
       });
 
-      let aiContent = aiResponse.choices[0]?.message?.content || "{}";
-      aiContent = aiContent.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-      let parsed: any = {};
-      try { parsed = JSON.parse(aiContent); } catch {}
+      const aiContent = aiResponse.choices[0]?.message?.content || "{}";
+      const parsed = parseAiJson(aiContent);
       cleanupFile(filePath);
 
+      if (!parsed) {
+        return res.json({ contentions: [], responses: [], caseText: plainText.slice(0, 2000) });
+      }
+
+      const validDocIds = new Set(allDocs.map((d) => d.id));
+      const validatedResponses = (parsed.responses || []).map((r: any) => ({
+        ...r,
+        contentionIndex: typeof r.contentionIndex === "number" ? r.contentionIndex : 0,
+        docId: validDocIds.has(r.docId) ? r.docId : 0,
+        docFilename: validDocIds.has(r.docId) ? r.docFilename : (r.docFilename || "No match in library"),
+      }));
+
       res.json({
-        arguments: parsed.arguments || [],
-        responses: parsed.responses || [],
+        contentions: parsed.contentions || [],
+        responses: validatedResponses,
         caseText: plainText.slice(0, 2000),
       });
     } catch (error: any) {
@@ -598,11 +707,13 @@ Be specific. Only include confident matches. Return ONLY JSON, no explanation.`,
 
       const sections = await storage.getSectionsByDocumentId(doc.id);
       const parsedSections = sections.map((s) => ({ heading: s.heading, content: s.content }));
-      const aiKeywords = await generateAiKeywords(doc.originalFilename, parsedSections, doc.tags);
-      const searchIndex = buildSearchIndex(doc.originalFilename, doc.tags, parsedSections, aiKeywords);
-      await storage.updateDocumentAiData(doc.id, aiKeywords, searchIndex);
+      const { keywords, tags: aiTags } = await generateAiKeywordsAndTags(doc.originalFilename, parsedSections, doc.tags);
+      const mergedTags = [...new Set([...doc.tags, ...aiTags])];
+      await storage.updateDocumentTags(doc.id, mergedTags);
+      const searchIndex = buildSearchIndex(doc.originalFilename, mergedTags, parsedSections, keywords);
+      await storage.updateDocumentAiData(doc.id, keywords, searchIndex);
 
-      res.json({ success: true, keywords: aiKeywords.length });
+      res.json({ success: true, keywords: keywords.length, tags: aiTags.length });
     } catch (error: any) {
       res.status(500).json({ error: error.message || "Reindex failed" });
     }
