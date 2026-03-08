@@ -170,8 +170,14 @@ async function generateAiKeywordsAndTags(
           content: `You are a Public Forum Debate evidence indexer. ${DEBATE_TERMINOLOGY}
 
 Analyze this debate file and return ONLY a JSON object with two arrays:
-1. "keywords": 30 search keywords including debate abbreviations, synonyms, concepts this file responds to/turns, argument types, and related terminology. Think about every way a debater might search for this.
-2. "tags": 5-8 short descriptive tags for categorizing this file (e.g. "cap good", "warming impact turn", "china heg", "dedev", "econ decline good")
+1. "keywords": 30 search keywords. Include:
+   - Topic abbreviations and synonyms (cap good, dedev, china heg, etc.)
+   - Argument-level descriptions: what specific claims does this file make? (e.g. "econ decline leads to peace", "warming causes extinction", "capitalism solves environment")
+   - What this file RESPONDS TO or TURNS (e.g. if it's dedev, include "econ growth bad", "growth causes warming")
+   - Impact chains mentioned (e.g. "trade war escalation nuclear")
+   - Debate response types if applicable (NUQ, NL, L/T, N!, !/T)
+   Think about every way a debater might search for this file.
+2. "tags": 5-8 short descriptive tags (e.g. "cap good", "warming impact turn", "china heg", "dedev", "econ decline good")
 
 File: ${filename}
 Existing tags: ${existingTags.join(", ") || "none"}
@@ -463,7 +469,7 @@ export async function registerRoutes(
             role: "user",
             content: `${DEBATE_TERMINOLOGY}
 
-You are a PF debate evidence assistant. For each document below, write ONE sentence explaining how it's relevant to the search query. Be specific about the debate argument. Focus on what helps a debater decide if this file is useful RIGHT NOW.
+You are a PF debate evidence assistant. For each document below, write ONE sentence explaining the specific argument this file makes that's relevant to the search query. Focus on the claim chain: what does this file argue causes what? For example: "Argues economic decline reduces military spending, leading to fewer interstate conflicts" is better than "Contains evidence about economic decline". Be specific about what a debater will find.
 
 Search: "${query}"
 

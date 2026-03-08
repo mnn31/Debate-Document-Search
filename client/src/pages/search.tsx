@@ -1,12 +1,11 @@
-import { useState, useEffect, useCallback } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useState, useCallback, useRef } from "react";
 import { apiRequest } from "@/lib/queryClient";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Search, Download, FileText, Sparkles, AlertCircle, Brain, Zap, ChevronDown, ChevronUp } from "lucide-react";
+import { Search, Download, FileText, Sparkles, AlertCircle, ChevronDown, ChevronUp } from "lucide-react";
 
 interface SearchResult {
   document: {
@@ -32,93 +31,86 @@ export default function SearchPage() {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
   const [aiSummaries, setAiSummaries] = useState<Record<number, { summary: string; sectionHint: string }>>({});
-  const [searchPhase, setSearchPhase] = useState<"idle" | "keyword" | "semantic" | "enhancing" | "done">("idle");
+  const [isSearching, setIsSearching] = useState(false);
+  const [isEnhancing, setIsEnhancing] = useState(false);
   const [expandedSections, setExpandedSections] = useState<Set<number>>(new Set());
   const [hasSearched, setHasSearched] = useState(false);
-
-  const keywordSearchMutation = useMutation({
-    mutationFn: async (searchQuery: string) => {
-      const res = await apiRequest("POST", "/api/search", { query: searchQuery });
-      return (await res.json()) as { results: SearchResult[]; query: string };
-    },
-  });
-
-  const semanticSearchMutation = useMutation({
-    mutationFn: async (searchQuery: string) => {
-      const res = await apiRequest("POST", "/api/search/semantic", { query: searchQuery });
-      return (await res.json()) as { results: SearchResult[] };
-    },
-  });
-
-  const aiEnhanceMutation = useMutation({
-    mutationFn: async ({ searchQuery, documentIds }: { searchQuery: string; documentIds: number[] }) => {
-      const res = await apiRequest("POST", "/api/search/ai-enhance", { query: searchQuery, documentIds });
-      return (await res.json()) as { summaries: Record<number, { summary: string; sectionHint: string }> };
-    },
-  });
-
-  const mergeResults = useCallback((keywordResults: SearchResult[], semanticResults: SearchResult[]): SearchResult[] => {
-    const resultMap = new Map<number, SearchResult>();
-
-    for (const r of keywordResults) {
-      resultMap.set(r.document.id, r);
-    }
-
-    for (const r of semanticResults) {
-      if (!resultMap.has(r.document.id)) {
-        resultMap.set(r.document.id, { ...r, rank: -1 });
-      } else {
-        const existing = resultMap.get(r.document.id)!;
-        if (r.aiSummary && !existing.aiSummary) {
-          existing.aiSummary = r.aiSummary;
-        }
-        if (r.sectionHint && !existing.sectionHint) {
-          existing.sectionHint = r.sectionHint;
-        }
-      }
-    }
-
-    return Array.from(resultMap.values()).sort((a, b) => b.rank - a.rank);
-  }, []);
+  const [searchError, setSearchError] = useState(false);
+  const searchIdRef = useRef(0);
 
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
     const trimmed = query.trim();
     if (!trimmed) return;
 
+    const thisSearchId = ++searchIdRef.current;
     setHasSearched(true);
     setResults([]);
     setAiSummaries({});
     setExpandedSections(new Set());
-    setSearchPhase("keyword");
+    setIsSearching(true);
+    setIsEnhancing(false);
+    setSearchError(false);
 
-    const [keywordResult, semanticResult] = await Promise.allSettled([
-      keywordSearchMutation.mutateAsync(trimmed),
-      semanticSearchMutation.mutateAsync(trimmed),
-    ]);
+    try {
+      const res = await apiRequest("POST", "/api/search", { query: trimmed });
+      const data = (await res.json()) as { results: SearchResult[]; query: string };
 
-    const keywordResults = keywordResult.status === "fulfilled" ? keywordResult.value.results : [];
-    const semanticResults = semanticResult.status === "fulfilled" ? semanticResult.value.results : [];
+      if (thisSearchId !== searchIdRef.current) return;
 
-    if (keywordResults.length > 0) {
-      setResults(keywordResults);
+      setResults(data.results);
+      setIsSearching(false);
+
+      if (data.results.length > 0) {
+        setIsEnhancing(true);
+
+        const semanticPromise = apiRequest("POST", "/api/search/semantic", { query: trimmed })
+          .then(r => r.json())
+          .then((semData: { results: SearchResult[] }) => {
+            if (thisSearchId !== searchIdRef.current) return;
+            if (semData.results?.length > 0) {
+              setResults(prev => {
+                const existingMap = new Map(prev.map(r => [r.document.id, r]));
+                const updated = [...prev];
+                for (const semResult of semData.results) {
+                  const existing = existingMap.get(semResult.document.id);
+                  if (existing) {
+                    if (semResult.aiSummary && !existing.aiSummary) existing.aiSummary = semResult.aiSummary;
+                    if (semResult.sectionHint && !existing.sectionHint) existing.sectionHint = semResult.sectionHint;
+                  } else {
+                    updated.push({ ...semResult, rank: -1 });
+                  }
+                }
+                return updated;
+              });
+            }
+          })
+          .catch(() => {});
+
+        const enhanceIds = data.results.map(r => r.document.id);
+        const enhancePromise = apiRequest("POST", "/api/search/ai-enhance", { query: trimmed, documentIds: enhanceIds })
+          .then(r => r.json())
+          .then((enhData: { summaries: Record<number, { summary: string; sectionHint: string }> }) => {
+            if (thisSearchId !== searchIdRef.current) return;
+            if (enhData.summaries) {
+              setAiSummaries(enhData.summaries);
+            }
+          })
+          .catch(() => {});
+
+        await Promise.allSettled([semanticPromise, enhancePromise]);
+        if (thisSearchId === searchIdRef.current) {
+          setIsEnhancing(false);
+        }
+      } else {
+        setIsSearching(false);
+      }
+    } catch {
+      if (thisSearchId === searchIdRef.current) {
+        setSearchError(true);
+        setIsSearching(false);
+      }
     }
-
-    setSearchPhase("semantic");
-
-    const merged = mergeResults(keywordResults, semanticResults);
-    setResults(merged);
-
-    if (merged.length > 0) {
-      setSearchPhase("enhancing");
-      const ids = merged.map((r) => r.document.id);
-      try {
-        const enhanceData = await aiEnhanceMutation.mutateAsync({ searchQuery: trimmed, documentIds: ids });
-        setAiSummaries(enhanceData.summaries || {});
-      } catch {}
-    }
-
-    setSearchPhase("done");
   };
 
   const handleDownload = (id: number, filename: string) => {
@@ -151,8 +143,6 @@ export default function SearchPage() {
     return null;
   };
 
-  const isLoading = searchPhase === "keyword" || searchPhase === "semantic";
-
   return (
     <div className="max-w-4xl mx-auto p-6 space-y-6">
       <div className="space-y-2">
@@ -174,35 +164,12 @@ export default function SearchPage() {
             data-testid="input-search"
           />
         </div>
-        <Button type="submit" disabled={isLoading || !query.trim()} data-testid="button-search">
-          {isLoading ? "Searching..." : "Search"}
+        <Button type="submit" disabled={isSearching || !query.trim()} data-testid="button-search">
+          {isSearching ? "Searching..." : "Search"}
         </Button>
       </form>
 
-      {searchPhase !== "idle" && searchPhase !== "done" && (
-        <div className="flex items-center gap-3 text-sm text-muted-foreground" data-testid="search-status">
-          {searchPhase === "keyword" && (
-            <>
-              <Zap className="w-4 h-4 text-yellow-500 animate-pulse" />
-              <span>Searching keywords and tags...</span>
-            </>
-          )}
-          {searchPhase === "semantic" && (
-            <>
-              <Brain className="w-4 h-4 text-blue-500 animate-pulse" />
-              <span>AI semantic search running...</span>
-            </>
-          )}
-          {searchPhase === "enhancing" && (
-            <>
-              <Sparkles className="w-4 h-4 text-purple-500 animate-pulse" />
-              <span>Generating AI summaries...</span>
-            </>
-          )}
-        </div>
-      )}
-
-      {isLoading && results.length === 0 && (
+      {isSearching && results.length === 0 && (
         <div className="space-y-4" data-testid="search-loading">
           {[1, 2, 3].map((i) => (
             <Card key={i}>
@@ -218,7 +185,7 @@ export default function SearchPage() {
         </div>
       )}
 
-      {(keywordSearchMutation.isError && semanticSearchMutation.isError) && (
+      {searchError && (
         <Card className="border-destructive/50">
           <CardContent className="flex items-center gap-3 pt-6">
             <AlertCircle className="w-5 h-5 text-destructive" />
@@ -234,7 +201,13 @@ export default function SearchPage() {
               {results.length} result{results.length !== 1 ? "s" : ""} found
             </p>
             <div className="flex items-center gap-2">
-              {searchPhase === "done" && Object.keys(aiSummaries).length > 0 && (
+              {isEnhancing && (
+                <Badge variant="secondary" className="gap-1 animate-pulse">
+                  <Sparkles className="w-3 h-3" />
+                  Loading AI summaries...
+                </Badge>
+              )}
+              {!isEnhancing && Object.keys(aiSummaries).length > 0 && (
                 <Badge variant="secondary" className="gap-1">
                   <Sparkles className="w-3 h-3" />
                   AI-Enhanced
@@ -288,7 +261,7 @@ export default function SearchPage() {
                         </p>
                       </div>
                     </div>
-                  ) : searchPhase === "enhancing" ? (
+                  ) : isEnhancing ? (
                     <div className="bg-muted/50 rounded-md p-3">
                       <Skeleton className="h-4 w-full" />
                     </div>
@@ -334,7 +307,7 @@ export default function SearchPage() {
         </div>
       )}
 
-      {hasSearched && searchPhase === "done" && results.length === 0 && (
+      {hasSearched && !isSearching && results.length === 0 && (
         <Card>
           <CardContent className="flex flex-col items-center justify-center py-12 text-center">
             <FileText className="w-12 h-12 text-muted-foreground/30 mb-4" />
