@@ -18,7 +18,8 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import { Download, Trash2, FileText, Tag, Plus, X, FolderOpen, Brain, RefreshCw } from "lucide-react";
+import { Download, Trash2, FileText, Tag, Plus, X, FolderOpen, Brain, RefreshCw, Eye } from "lucide-react";
+import { Link } from "wouter";
 interface DocumentListItem {
   id: number;
   filename: string;
@@ -163,6 +164,16 @@ export default function LibraryPage() {
                   </div>
                 </div>
                 <div className="flex items-center gap-1">
+                  <Link href={`/documents/${doc.id}`}>
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      title="View cards"
+                      data-testid={`button-view-cards-${doc.id}`}
+                    >
+                      <Eye className="w-4 h-4" />
+                    </Button>
+                  </Link>
                   <Button
                     size="icon"
                     variant="ghost"

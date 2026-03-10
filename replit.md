@@ -32,11 +32,17 @@ AI-powered evidence management tool for Public Forum Debate. Upload .docx eviden
 6. **AI keyword indexing** — 30 keywords per doc at upload time for instant search
 7. **Auto-tagging** — AI generates 5-8 categorization tags automatically on upload
 8. **Re-index** — manual re-index button regenerates keywords AND auto-tags
+9. **Evidence card detection** — parses individual cards with TAG/CITE/BODY structure; detects analytics (subheaders without evidence body)
+10. **Card viewer** — `/documents/:id` shows all parsed cards per document
+11. **Recut signature editor** — add "recut [name]" to end of card citations for attribution
+12. **Card search** — search within individual evidence cards, toggle between document and card search modes
+13. **AT/A2 synonym expansion** — "AT tradeoff" auto-expands to "answer to tradeoff" at search time
 
 ## Database Schema
 - `users` - basic user table (unused currently)
 - `documents` - uploaded files with tags, extracted text, AI keywords, search index
 - `document_sections` - parsed sections (by headings) for granular search
+- `evidence_cards` - individual parsed cards with tag/cite/body, isAnalytic flag, customTag/customCite for user edits
 
 ## Important: AI Token Limits
 - gpt-5-nano uses ~88% of completion tokens for internal reasoning
@@ -49,7 +55,7 @@ AI-powered evidence management tool for Public Forum Debate. Upload .docx eviden
 - `server/db.ts` - Database connection
 - `server/storage.ts` - CRUD operations with search ranking (quadratic filename boost)
 - `server/routes.ts` - API endpoints, DEBATE_TERMINOLOGY constant, AI prompts
-- `client/src/pages/` - Search, Library, Upload, Opponent pages
+- `client/src/pages/` - Search, Library, Upload, Opponent, Document (card viewer) pages
 - `client/src/components/app-sidebar.tsx` - Navigation sidebar
 - `uploads/` - Stored .docx files (filesystem)
 
@@ -65,6 +71,10 @@ AI-powered evidence management tool for Public Forum Debate. Upload .docx eviden
 - `POST /api/search/ai-enhance` - Generate AI summaries for results
 - `POST /api/documents/:id/reindex` - Regenerate AI keywords AND auto-tags
 - `POST /api/analyze-opponent-case` - Break down opponent case, find typed responses
+- `GET /api/documents/:id/cards` - Get all evidence cards for a document
+- `POST /api/documents/:id/reparse-cards` - Re-parse evidence cards from document HTML
+- `PATCH /api/cards/:id/signature` - Update card customTag/customCite (recut signature)
+- `POST /api/search/cards` - Search within individual evidence cards
 
 ## Environment
 - Uses Replit AI Integrations for OpenAI (no API key needed)

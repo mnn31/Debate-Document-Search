@@ -52,3 +52,26 @@ export const insertDocumentSectionSchema = createInsertSchema(documentSections).
 
 export type InsertDocumentSection = z.infer<typeof insertDocumentSectionSchema>;
 export type DocumentSection = typeof documentSections.$inferSelect;
+
+import { boolean } from "drizzle-orm/pg-core";
+
+export const evidenceCards = pgTable("evidence_cards", {
+  id: serial("id").primaryKey(),
+  documentId: integer("document_id").notNull().references(() => documents.id, { onDelete: "cascade" }),
+  tag: text("tag").notNull().default(""),
+  cite: text("cite").notNull().default(""),
+  body: text("body").notNull().default(""),
+  cardIndex: integer("card_index").notNull().default(0),
+  isAnalytic: boolean("is_analytic").notNull().default(false),
+  customTag: text("custom_tag"),
+  customCite: text("custom_cite"),
+}, (table) => [
+  index("idx_cards_document_id").on(table.documentId),
+]);
+
+export const insertEvidenceCardSchema = createInsertSchema(evidenceCards).omit({
+  id: true,
+});
+
+export type InsertEvidenceCard = z.infer<typeof insertEvidenceCardSchema>;
+export type EvidenceCard = typeof evidenceCards.$inferSelect;

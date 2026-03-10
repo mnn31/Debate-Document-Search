@@ -136,6 +136,102 @@ function parseDocxSections(htmlContent: string): Array<{ heading: string; conten
   return allSections;
 }
 
+interface ParsedCard {
+  tag: string;
+  cite: string;
+  body: string;
+  isAnalytic: boolean;
+}
+
+function parseEvidenceCards(htmlContent: string): ParsedCard[] {
+  const cards: ParsedCard[] = [];
+
+  const paragraphs: Array<{ text: string; isBold: boolean; isUnderline: boolean; isHighlight: boolean; html: string }> = [];
+
+  const blockPattern = /<(?:p|h[1-6])[^>]*>([\s\S]*?)<\/(?:p|h[1-6])>/gi;
+  let match;
+  while ((match = blockPattern.exec(htmlContent)) !== null) {
+    const innerHtml = match[1];
+    const text = innerHtml.replace(/<[^>]*>/g, "").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/\s+/g, " ").trim();
+    if (!text) continue;
+
+    const isBold = /<strong|<b[\s>]|font-weight:\s*bold/i.test(innerHtml);
+    const isUnderline = /<u[\s>]|text-decoration[^"]*underline/i.test(innerHtml);
+    const isHighlight = /background-color|<mark/i.test(innerHtml);
+    const isHeading = /^<h[1-6]/i.test(match[0]);
+
+    paragraphs.push({
+      text,
+      isBold: isBold || isHeading,
+      isUnderline,
+      isHighlight,
+      html: innerHtml,
+    });
+  }
+
+  if (paragraphs.length === 0) return [];
+
+  const citePattern = /^[\[\(]?\s*[A-Z][a-zA-Z'\-]+(?:\s+(?:et\s+al\.?|&\s+[A-Z][a-zA-Z'\-]+))?\s*(?:,?\s*(?:'?\d{2,4}|20[0-2]\d|19\d{2}))/;
+  const citePattern2 = /\d{1,2}[-\/]\d{1,2}[-\/]\d{2,4}/;
+  const citePattern3 = /(?:PhD|Professor|Dr\.|University|Institute|Journal|Fellow|Director)/i;
+  const yearBracketPattern = /[\[\(]\s*[A-Z].*?\d{2,4}\s*[\]\)]/;
+
+  function isCiteLine(text: string): boolean {
+    if (text.length > 500) return false;
+    return citePattern.test(text) || yearBracketPattern.test(text) ||
+      (citePattern2.test(text) && text.length < 300) ||
+      (citePattern3.test(text) && text.length < 300);
+  }
+
+  function isTagLine(text: string, isBold: boolean, isUnderline: boolean): boolean {
+    if (text.length > 150) return false;
+    if (text.length < 3) return false;
+    if (isBold || isUnderline) return true;
+    if (/^(AT|A2|Answer to|Answers|Impact|Link|Turn|Internal Link|Uniqueness|Nonunique|No Link|Link Turn|No Impact|Impact Turn|Contention|Shell|Frontline|Extension|1AR|1NC|2AR|2NC)/i.test(text)) return true;
+    if (/^[A-Z][^.]*$/.test(text) && text.length < 100) return true;
+    return false;
+  }
+
+  let i = 0;
+  while (i < paragraphs.length) {
+    const p = paragraphs[i];
+
+    if (isTagLine(p.text, p.isBold, p.isUnderline)) {
+      const tag = p.text;
+      let cite = "";
+      let bodyParts: string[] = [];
+      let j = i + 1;
+
+      if (j < paragraphs.length && isCiteLine(paragraphs[j].text)) {
+        cite = paragraphs[j].text;
+        j++;
+      }
+
+      while (j < paragraphs.length) {
+        const next = paragraphs[j];
+        if (isTagLine(next.text, next.isBold, next.isUnderline) && !isCiteLine(next.text)) break;
+        if (isCiteLine(next.text) && bodyParts.length > 0) break;
+        bodyParts.push(next.text);
+        j++;
+      }
+
+      const body = bodyParts.join("\n\n");
+
+      if (cite || body.length > 50) {
+        cards.push({ tag, cite, body, isAnalytic: false });
+      } else if (body.length === 0 || body.length <= 50) {
+        cards.push({ tag, cite: "", body, isAnalytic: true });
+      }
+
+      i = j;
+    } else {
+      i++;
+    }
+  }
+
+  return cards;
+}
+
 function parseAiJson(raw: string): any {
   let content = raw.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
   try {
@@ -281,12 +377,26 @@ export async function registerRoutes(
       }));
       await storage.createSections(sectionData);
 
+      const parsedCards = parseEvidenceCards(htmlContent);
+      if (parsedCards.length > 0) {
+        const cardData = parsedCards.map((c, i) => ({
+          documentId: doc.id,
+          tag: c.tag,
+          cite: c.cite,
+          body: c.body,
+          cardIndex: i,
+          isAnalytic: c.isAnalytic,
+        }));
+        await storage.createCards(cardData);
+      }
+
       res.json({
         id: doc.id,
         originalFilename: doc.originalFilename,
         tags: doc.tags,
         uploadedAt: doc.uploadedAt,
         indexing: true,
+        cardCount: parsedCards.length,
       });
 
       const fileRef = req.file;
@@ -722,6 +832,91 @@ IMPORTANT: contentionIndex MUST be a 0-based integer matching the contentions ar
       res.json({ success: true, keywords: keywords.length, tags: aiTags.length });
     } catch (error: any) {
       res.status(500).json({ error: error.message || "Reindex failed" });
+    }
+  });
+
+  app.post("/api/documents/:id/reparse-cards", async (req, res) => {
+    try {
+      const doc = await storage.getDocument(parseInt(req.params.id));
+      if (!doc) return res.status(404).json({ error: "Document not found" });
+
+      const filePath = path.join(uploadDir, doc.filename);
+      if (!fs.existsSync(filePath)) {
+        return res.status(404).json({ error: "File not found on disk" });
+      }
+
+      const result = await mammoth.convertToHtml({ path: filePath });
+      const htmlContent = result.value;
+      const parsedCards = parseEvidenceCards(htmlContent);
+
+      await storage.deleteCardsByDocumentId(doc.id);
+
+      if (parsedCards.length > 0) {
+        const cardData = parsedCards.map((c, i) => ({
+          documentId: doc.id,
+          tag: c.tag,
+          cite: c.cite,
+          body: c.body,
+          cardIndex: i,
+          isAnalytic: c.isAnalytic,
+        }));
+        await storage.createCards(cardData);
+      }
+
+      res.json({ success: true, cardCount: parsedCards.length });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message || "Re-parse failed" });
+    }
+  });
+
+  app.get("/api/documents/:id/cards", async (req, res) => {
+    try {
+      const doc = await storage.getDocument(parseInt(req.params.id));
+      if (!doc) return res.status(404).json({ error: "Document not found" });
+      const cards = await storage.getCardsByDocumentId(doc.id);
+      res.json({ document: { id: doc.id, originalFilename: doc.originalFilename, tags: doc.tags }, cards });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message || "Failed to fetch cards" });
+    }
+  });
+
+  app.patch("/api/cards/:id/signature", async (req, res) => {
+    try {
+      const updates: Partial<{ customTag: string | null; customCite: string | null }> = {};
+      if ("customTag" in req.body) updates.customTag = req.body.customTag;
+      if ("customCite" in req.body) updates.customCite = req.body.customCite;
+      const updated = await storage.updateCardSignaturePartial(
+        parseInt(req.params.id),
+        updates
+      );
+      if (!updated) return res.status(404).json({ error: "Card not found" });
+      res.json(updated);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message || "Failed to update card" });
+    }
+  });
+
+  app.post("/api/search/cards", async (req, res) => {
+    try {
+      const { query } = req.body;
+      if (!query || typeof query !== "string" || query.trim().length === 0) {
+        return res.status(400).json({ error: "Search query is required" });
+      }
+      const results = await storage.searchCards(query.trim());
+      res.json({
+        results: results.map((r) => ({
+          card: r.card,
+          document: {
+            id: r.doc.id,
+            originalFilename: r.doc.originalFilename,
+            tags: r.doc.tags,
+          },
+          rank: r.rank,
+        })),
+      });
+    } catch (error: any) {
+      console.error("Card search error:", error);
+      res.status(500).json({ error: "Card search failed" });
     }
   });
 

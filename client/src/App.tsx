@@ -10,6 +10,7 @@ import SearchPage from "@/pages/search";
 import LibraryPage from "@/pages/library";
 import UploadPage from "@/pages/upload";
 import OpponentPage from "@/pages/opponent";
+import DocumentPage from "@/pages/document";
 
 function Router() {
   return (
@@ -18,6 +19,7 @@ function Router() {
       <Route path="/library" component={LibraryPage} />
       <Route path="/upload" component={UploadPage} />
       <Route path="/opponent" component={OpponentPage} />
+      <Route path="/documents/:id" component={DocumentPage} />
       <Route component={NotFound} />
     </Switch>
   );

@@ -1,12 +1,43 @@
 import { eq, sql, or } from "drizzle-orm";
 import { db } from "./db";
 import {
-  documents, documentSections,
+  documents, documentSections, evidenceCards,
   type Document, type InsertDocument,
   type DocumentSection, type InsertDocumentSection,
+  type EvidenceCard, type InsertEvidenceCard,
   type User, type InsertUser, users,
 } from "@shared/schema";
 import { randomUUID } from "crypto";
+
+const DEBATE_SYNONYMS: Record<string, string[]> = {
+  "at": ["answer to", "a2", "answers to"],
+  "a2": ["answer to", "at", "answers to"],
+  "heg": ["hegemony", "china rise", "us primacy", "unipolarity"],
+  "dedev": ["degrowth", "growth bad", "economic decline good"],
+  "cap": ["capitalism"],
+  "nuke": ["nuclear"],
+  "prolif": ["proliferation"],
+  "uq": ["uniqueness", "status quo"],
+  "il": ["internal link"],
+  "da": ["disadvantage"],
+  "cp": ["counterplan"],
+  "k": ["kritik", "critique"],
+};
+
+function expandSearchTerms(terms: string[]): string[] {
+  const expanded = new Set(terms);
+  const joined = terms.join(" ").toLowerCase();
+
+  for (const [abbrev, synonyms] of Object.entries(DEBATE_SYNONYMS)) {
+    if (terms.includes(abbrev) || joined.includes(abbrev)) {
+      for (const syn of synonyms) {
+        expanded.add(syn);
+      }
+    }
+  }
+
+  return Array.from(expanded);
+}
 
 export interface IStorage {
   getUser(id: string): Promise<User | undefined>;
@@ -22,6 +53,13 @@ export interface IStorage {
 
   createSections(sections: InsertDocumentSection[]): Promise<DocumentSection[]>;
   getSectionsByDocumentId(documentId: number): Promise<DocumentSection[]>;
+
+  createCards(cards: InsertEvidenceCard[]): Promise<EvidenceCard[]>;
+  getCardsByDocumentId(documentId: number): Promise<EvidenceCard[]>;
+  updateCardSignature(id: number, customTag: string | null, customCite: string | null): Promise<EvidenceCard | undefined>;
+  updateCardSignaturePartial(id: number, updates: Partial<{ customTag: string | null; customCite: string | null }>): Promise<EvidenceCard | undefined>;
+  deleteCardsByDocumentId(documentId: number): Promise<void>;
+  searchCards(query: string): Promise<Array<{ card: EvidenceCard; doc: Document; rank: number }>>;
 
   fullTextSearch(query: string): Promise<Array<{ doc: Document; rank: number }>>;
 }
@@ -58,6 +96,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   async deleteDocument(id: number): Promise<void> {
+    await db.delete(evidenceCards).where(eq(evidenceCards.documentId, id));
     await db.delete(documentSections).where(eq(documentSections.documentId, id));
     await db.delete(documents).where(eq(documents.id, id));
   }
@@ -91,14 +130,93 @@ export class DatabaseStorage implements IStorage {
       .orderBy(documentSections.sectionIndex);
   }
 
+  async createCards(cards: InsertEvidenceCard[]): Promise<EvidenceCard[]> {
+    if (cards.length === 0) return [];
+    return db.insert(evidenceCards).values(cards).returning();
+  }
+
+  async getCardsByDocumentId(documentId: number): Promise<EvidenceCard[]> {
+    return db
+      .select()
+      .from(evidenceCards)
+      .where(eq(evidenceCards.documentId, documentId))
+      .orderBy(evidenceCards.cardIndex);
+  }
+
+  async updateCardSignature(id: number, customTag: string | null, customCite: string | null): Promise<EvidenceCard | undefined> {
+    const [updated] = await db
+      .update(evidenceCards)
+      .set({ customTag, customCite })
+      .where(eq(evidenceCards.id, id))
+      .returning();
+    return updated;
+  }
+
+  async updateCardSignaturePartial(id: number, updates: Partial<{ customTag: string | null; customCite: string | null }>): Promise<EvidenceCard | undefined> {
+    if (Object.keys(updates).length === 0) {
+      const [card] = await db.select().from(evidenceCards).where(eq(evidenceCards.id, id));
+      return card;
+    }
+    const [updated] = await db
+      .update(evidenceCards)
+      .set(updates)
+      .where(eq(evidenceCards.id, id))
+      .returning();
+    return updated;
+  }
+
+  async deleteCardsByDocumentId(documentId: number): Promise<void> {
+    await db.delete(evidenceCards).where(eq(evidenceCards.documentId, documentId));
+  }
+
+  async searchCards(query: string): Promise<Array<{ card: EvidenceCard; doc: Document; rank: number }>> {
+    const rawTerms = query.toLowerCase().split(/\s+/).filter((t) => t.length > 0);
+    if (rawTerms.length === 0) return [];
+
+    const searchTerms = expandSearchTerms(rawTerms);
+    const likePatterns = searchTerms.map((term) => `%${term}%`);
+
+    const conditions = likePatterns.flatMap((pattern) => [
+      sql`LOWER(${evidenceCards.tag}) LIKE ${pattern}`,
+      sql`LOWER(${evidenceCards.cite}) LIKE ${pattern}`,
+      sql`LOWER(${evidenceCards.body}) LIKE ${pattern}`,
+    ]);
+
+    const fullQuery = query.toLowerCase();
+    const fullQueryPattern = `%${fullQuery}%`;
+
+    const rankExpr = sql<number>`(
+      ${searchTerms.map((term) => {
+        const p = `%${term}%`;
+        return sql`(
+          CASE WHEN LOWER(${evidenceCards.tag}) LIKE ${p} THEN 60 ELSE 0 END +
+          CASE WHEN LOWER(${evidenceCards.cite}) LIKE ${p} THEN 20 ELSE 0 END +
+          CASE WHEN LOWER(${evidenceCards.body}) LIKE ${p} THEN 10 ELSE 0 END
+        )`;
+      }).reduce((acc, curr) => sql`${acc} + ${curr}`)}
+      + CASE WHEN LOWER(${evidenceCards.tag}) LIKE ${fullQueryPattern} THEN 200 ELSE 0 END
+    )`;
+
+    const results = await db
+      .select({
+        card: evidenceCards,
+        doc: documents,
+        rank: rankExpr,
+      })
+      .from(evidenceCards)
+      .innerJoin(documents, eq(evidenceCards.documentId, documents.id))
+      .where(or(...conditions))
+      .orderBy(sql`${rankExpr} DESC`)
+      .limit(30);
+
+    return results.filter((r) => r.rank > 0);
+  }
+
   async fullTextSearch(query: string): Promise<Array<{ doc: Document; rank: number }>> {
-    const searchTerms = query
-      .toLowerCase()
-      .split(/\s+/)
-      .filter((t) => t.length > 0);
+    const rawTerms = query.toLowerCase().split(/\s+/).filter((t) => t.length > 0);
+    if (rawTerms.length === 0) return [];
 
-    if (searchTerms.length === 0) return [];
-
+    const searchTerms = expandSearchTerms(rawTerms);
     const likePatterns = searchTerms.map((term) => `%${term}%`);
 
     const conditions = likePatterns.flatMap((pattern) => [
