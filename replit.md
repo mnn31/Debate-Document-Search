@@ -83,7 +83,8 @@ AI-powered evidence management tool for Public Forum Debate. Upload .docx eviden
 - Card tag match count per document gets scaled bonus (up to 10 matches × 60)
 - Section heading match count per document gets scaled bonus (up to 10 matches × 80)
 - Section headings are normalized (colons, dashes stripped) for matching "AT tradeoff" → "AT: FTC Tradeoff"
-- Evidence card parser skips h1-h6 headings (section dividers), only processes `<p>` blocks as card candidates
+- Evidence card parser: h1-h2 = section dividers (skipped), h3 = section divider unless followed by cite, h4+ = card tags; `<p>` with bold/underline also treated as tags
+- Card search also matches section headings (normalized) with +300 rank bonus, returns matching section heading for download
 - jszip used for section download: extracts paragraphs from original .docx XML between heading boundaries
 
 ## Environment

@@ -61,7 +61,7 @@ export interface IStorage {
   updateCardSignature(id: number, customTag: string | null, customCite: string | null): Promise<EvidenceCard | undefined>;
   updateCardSignaturePartial(id: number, updates: Partial<{ customTag: string | null; customCite: string | null }>): Promise<EvidenceCard | undefined>;
   deleteCardsByDocumentId(documentId: number): Promise<void>;
-  searchCards(query: string): Promise<Array<{ card: EvidenceCard; doc: Document; rank: number }>>;
+  searchCards(query: string): Promise<Array<{ card: EvidenceCard; doc: Document; rank: number; sectionHeading: string | null }>>;
 
   fullTextSearch(query: string): Promise<Array<{ doc: Document; rank: number }>>;
 }
@@ -171,12 +171,18 @@ export class DatabaseStorage implements IStorage {
     await db.delete(evidenceCards).where(eq(evidenceCards.documentId, documentId));
   }
 
-  async searchCards(query: string): Promise<Array<{ card: EvidenceCard; doc: Document; rank: number }>> {
+  async searchCards(query: string): Promise<Array<{ card: EvidenceCard; doc: Document; rank: number; sectionHeading: string | null }>> {
     const rawTerms = query.toLowerCase().split(/\s+/).filter((t) => t.length > 0);
     if (rawTerms.length === 0) return [];
 
     const searchTerms = expandSearchTerms(rawTerms);
     const likePatterns = searchTerms.map((term) => `%${term}%`);
+
+    const normalizedTerms = rawTerms.map((t) => t.replace(/[:\-_\/–—.]/g, "")).filter((t) => t.length > 0);
+    const normalizedQuery = normalizedTerms.join(" ");
+    const normalizedPattern = `%${normalizedQuery}%`;
+
+    const headingNormSql = sql`LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(ds.heading, ':', ' '), '-', ' '), '–', ' '), '—', ' '), '/', ' '), '_', ' '))`;
 
     const conditions = likePatterns.flatMap((pattern) => [
       sql`LOWER(${evidenceCards.tag}) LIKE ${pattern}`,
@@ -184,8 +190,20 @@ export class DatabaseStorage implements IStorage {
       sql`LOWER(${evidenceCards.body}) LIKE ${pattern}`,
     ]);
 
+    const normalizedHeadingConditions = normalizedTerms.map((term) => {
+      const p = `%${term}%`;
+      return sql`EXISTS (SELECT 1 FROM document_sections ds WHERE ds.document_id = ${evidenceCards.documentId} AND ${headingNormSql} LIKE ${p})`;
+    });
+
     const fullQuery = query.toLowerCase();
     const fullQueryPattern = `%${fullQuery}%`;
+
+    const sectionHeadingExpr = sql<string | null>`(SELECT ds.heading FROM document_sections ds WHERE ds.document_id = ${evidenceCards.documentId} AND (${
+      normalizedTerms.map((term) => {
+        const p = `%${term}%`;
+        return sql`${headingNormSql} LIKE ${p}`;
+      }).reduce((acc, curr) => sql`${acc} AND ${curr}`)
+    }) ORDER BY LENGTH(ds.heading) LIMIT 1)`;
 
     const rankExpr = sql<number>`(
       ${searchTerms.map((term) => {
@@ -197,6 +215,12 @@ export class DatabaseStorage implements IStorage {
         )`;
       }).reduce((acc, curr) => sql`${acc} + ${curr}`)}
       + CASE WHEN LOWER(${evidenceCards.tag}) LIKE ${fullQueryPattern} THEN 200 ELSE 0 END
+      + CASE WHEN EXISTS (SELECT 1 FROM document_sections ds WHERE ds.document_id = ${evidenceCards.documentId} AND ${
+        normalizedTerms.map((term) => {
+          const p = `%${term}%`;
+          return sql`${headingNormSql} LIKE ${p}`;
+        }).reduce((acc, curr) => sql`${acc} AND ${curr}`)
+      }) THEN 300 ELSE 0 END
     )`;
 
     const results = await db
@@ -204,10 +228,11 @@ export class DatabaseStorage implements IStorage {
         card: evidenceCards,
         doc: documents,
         rank: rankExpr,
+        sectionHeading: sectionHeadingExpr,
       })
       .from(evidenceCards)
       .innerJoin(documents, eq(evidenceCards.documentId, documents.id))
-      .where(or(...conditions))
+      .where(or(...conditions, ...normalizedHeadingConditions))
       .orderBy(sql`${rankExpr} DESC`)
       .limit(30);
 
@@ -234,9 +259,11 @@ export class DatabaseStorage implements IStorage {
       sql`EXISTS (SELECT 1 FROM evidence_cards ec WHERE ec.document_id = ${documents.id} AND LOWER(ec.tag) LIKE ${pattern})`,
     ]);
 
+    const headingNormSqlDoc = sql`LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(ds.heading, ':', ' '), '-', ' '), '–', ' '), '—', ' '), '/', ' '), '_', ' '))`;
+    const tagNormSqlDoc = sql`LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(ec.tag, ':', ' '), '-', ' '), '–', ' '), '—', ' '), '/', ' '), '_', ' '))`;
     const normalizedConditions = [
-      sql`EXISTS (SELECT 1 FROM document_sections ds WHERE ds.document_id = ${documents.id} AND LOWER(REPLACE(REPLACE(REPLACE(ds.heading, ':', ' '), '-', ' '), '–', ' ')) LIKE ${normalizedPattern})`,
-      sql`EXISTS (SELECT 1 FROM evidence_cards ec WHERE ec.document_id = ${documents.id} AND LOWER(REPLACE(REPLACE(REPLACE(ec.tag, ':', ' '), '-', ' '), '–', ' ')) LIKE ${normalizedPattern})`,
+      sql`EXISTS (SELECT 1 FROM document_sections ds WHERE ds.document_id = ${documents.id} AND ${headingNormSqlDoc} LIKE ${normalizedPattern})`,
+      sql`EXISTS (SELECT 1 FROM evidence_cards ec WHERE ec.document_id = ${documents.id} AND ${tagNormSqlDoc} LIKE ${normalizedPattern})`,
     ];
 
     const fullQuery = query.toLowerCase().replace(/[_-]/g, " ");
@@ -276,8 +303,8 @@ export class DatabaseStorage implements IStorage {
       + CASE WHEN EXISTS (SELECT 1 FROM unnest(${documents.aiKeywords}) AS kw WHERE LOWER(kw) LIKE ${fullQueryPattern}) THEN 150 ELSE 0 END
       + CASE WHEN EXISTS (SELECT 1 FROM document_sections ds WHERE ds.document_id = ${documents.id} AND ${
         rawTerms.map((term) => {
-          const p = `%${term}%`;
-          return sql`LOWER(REPLACE(REPLACE(REPLACE(ds.heading, ':', ' '), '-', ' '), '–', ' ')) LIKE ${p}`;
+          const p = `%${term.replace(/[:\-_\/–—.]/g, "")}%`;
+          return sql`${headingNormSqlDoc} LIKE ${p}`;
         }).reduce((acc, curr) => sql`${acc} AND ${curr}`)
       }) THEN 800 ELSE 0 END
       + CASE WHEN EXISTS (SELECT 1 FROM evidence_cards ec WHERE ec.document_id = ${documents.id} AND LOWER(ec.tag) LIKE ${fullQueryPattern}) THEN 250 ELSE 0 END

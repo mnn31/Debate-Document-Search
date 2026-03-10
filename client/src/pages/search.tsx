@@ -45,6 +45,7 @@ interface CardResult {
     tags: string[];
   };
   rank: number;
+  sectionHeading: string | null;
 }
 
 export default function SearchPage() {
@@ -420,6 +421,22 @@ export default function SearchPage() {
                         {result.document.originalFilename}
                       </Link>
                     </div>
+                    {result.sectionHeading && (
+                      <div className="flex items-center gap-2 text-xs">
+                        <Layers className="w-3 h-3 text-muted-foreground" />
+                        <span className="text-primary font-medium">{result.sectionHeading}</span>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-5 text-[10px] shrink-0 gap-1 px-1.5"
+                          onClick={() => handleSectionDownload(result.document.id, result.sectionHeading!)}
+                          data-testid={`button-download-section-card-${result.card.id}`}
+                        >
+                          <Download className="w-3 h-3" />
+                          Section
+                        </Button>
+                      </div>
+                    )}
                   </div>
                   <Button
                     size="icon"

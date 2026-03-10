@@ -147,7 +147,7 @@ interface ParsedCard {
 function parseEvidenceCards(htmlContent: string): ParsedCard[] {
   const cards: ParsedCard[] = [];
 
-  const paragraphs: Array<{ text: string; isBold: boolean; isUnderline: boolean; isHighlight: boolean; isHeading: boolean; html: string }> = [];
+  const paragraphs: Array<{ text: string; isBold: boolean; isUnderline: boolean; isHighlight: boolean; headingLevel: number; html: string }> = [];
 
   const blockPattern = /<(p|h[1-6])[^>]*>([\s\S]*?)<\/(?:p|h[1-6])>/gi;
   let match;
@@ -160,14 +160,15 @@ function parseEvidenceCards(htmlContent: string): ParsedCard[] {
     const isBold = /<strong|<b[\s>]|font-weight:\s*bold/i.test(innerHtml);
     const isUnderline = /<u[\s>]|text-decoration[^"]*underline/i.test(innerHtml);
     const isHighlight = /background-color|<mark/i.test(innerHtml);
-    const isHeading = /^h[1-6]$/.test(tagName);
+    const headingMatch = tagName.match(/^h(\d)$/);
+    const headingLevel = headingMatch ? parseInt(headingMatch[1]) : 0;
 
     paragraphs.push({
       text,
-      isBold: isBold || isHeading,
+      isBold: isBold || headingLevel > 0,
       isUnderline,
       isHighlight,
-      isHeading,
+      headingLevel,
       html: innerHtml,
     });
   }
@@ -186,11 +187,29 @@ function parseEvidenceCards(htmlContent: string): ParsedCard[] {
       (citePattern3.test(text) && text.length < 300);
   }
 
-  function isTagLine(text: string, isBold: boolean, isUnderline: boolean): boolean {
-    if (text.length > 150) return false;
+  function isSectionDivider(idx: number): boolean {
+    const p = paragraphs[idx];
+    if (p.headingLevel === 1 || p.headingLevel === 2) return true;
+    if (p.headingLevel === 3) {
+      for (let k = idx + 1; k < Math.min(idx + 6, paragraphs.length); k++) {
+        const next = paragraphs[k];
+        if (next.text.length === 0) continue;
+        if (next.headingLevel === 1 || next.headingLevel === 2) return true;
+        if (isCiteLine(next.text)) return false;
+        if (next.headingLevel >= 3) return true;
+        break;
+      }
+      return true;
+    }
+    return false;
+  }
+
+  function isTagLine(text: string, p: typeof paragraphs[0]): boolean {
     if (text.length < 3) return false;
-    if (isBold || isUnderline) return true;
-    if (/^(AT|A2|Answer to|Answers|Impact|Link|Turn|Internal Link|Uniqueness|Nonunique|No Link|Link Turn|No Impact|Impact Turn|Contention|Shell|Frontline|Extension|1AR|1NC|2AR|2NC)/i.test(text)) return true;
+    if (p.headingLevel >= 3) return true;
+    if (text.length > 300) return false;
+    if (p.isBold || p.isUnderline) return true;
+    if (/^(AT[:.]?\s|A2[:.]?\s|Answer to|Answers|Impact|Link|Turn|Internal Link|Uniqueness|Nonunique|No Link|Link Turn|No Impact|Impact Turn|Contention|Shell|Frontline|Extension|1AR|1NC|2AR|2NC)/i.test(text)) return true;
     if (/^[A-Z][^.]*$/.test(text) && text.length < 100) return true;
     return false;
   }
@@ -199,18 +218,16 @@ function parseEvidenceCards(htmlContent: string): ParsedCard[] {
   while (i < paragraphs.length) {
     const p = paragraphs[i];
 
-    if (p.isHeading) {
+    if (isSectionDivider(i)) {
       i++;
       continue;
     }
 
-    if (isTagLine(p.text, p.isBold, p.isUnderline)) {
+    if (isTagLine(p.text, p)) {
       const tag = p.text;
       let cite = "";
       let bodyParts: string[] = [];
       let j = i + 1;
-
-      while (j < paragraphs.length && paragraphs[j].isHeading) j++;
 
       if (j < paragraphs.length && isCiteLine(paragraphs[j].text)) {
         cite = paragraphs[j].text;
@@ -219,8 +236,8 @@ function parseEvidenceCards(htmlContent: string): ParsedCard[] {
 
       while (j < paragraphs.length) {
         const next = paragraphs[j];
-        if (next.isHeading) break;
-        if (isTagLine(next.text, next.isBold, next.isUnderline) && !isCiteLine(next.text)) break;
+        if (isSectionDivider(j)) break;
+        if (isTagLine(next.text, next) && !isCiteLine(next.text)) break;
         if (isCiteLine(next.text) && bodyParts.length > 0) break;
         bodyParts.push(next.text);
         j++;
@@ -923,6 +940,7 @@ IMPORTANT: contentionIndex MUST be a 0-based integer matching the contentions ar
             tags: r.doc.tags,
           },
           rank: r.rank,
+          sectionHeading: r.sectionHeading || null,
         })),
       });
     } catch (error: any) {
