@@ -75,6 +75,16 @@ AI-powered evidence management tool for Public Forum Debate. Upload .docx eviden
 - `POST /api/documents/:id/reparse-cards` - Re-parse evidence cards from document HTML
 - `PATCH /api/cards/:id/signature` - Update card customTag/customCite (recut signature)
 - `POST /api/search/cards` - Search within individual evidence cards
+- `POST /api/documents/reparse-all-cards` - Re-parse cards for ALL documents at once
+- `GET /api/documents/:id/download-section?heading=...` - Download a specific section as .docx with formatting preserved
+
+## Search Architecture Details
+- Section heading matches (all query terms in one heading) get +800 rank bonus
+- Card tag match count per document gets scaled bonus (up to 10 matches × 60)
+- Section heading match count per document gets scaled bonus (up to 10 matches × 80)
+- Section headings are normalized (colons, dashes stripped) for matching "AT tradeoff" → "AT: FTC Tradeoff"
+- Evidence card parser skips h1-h6 headings (section dividers), only processes `<p>` blocks as card candidates
+- jszip used for section download: extracts paragraphs from original .docx XML between heading boundaries
 
 ## Environment
 - Uses Replit AI Integrations for OpenAI (no API key needed)

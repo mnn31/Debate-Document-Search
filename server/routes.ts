@@ -5,6 +5,7 @@ import path from "path";
 import fs from "fs";
 import mammoth from "mammoth";
 import OpenAI from "openai";
+import JSZip from "jszip";
 import { storage } from "./storage";
 
 const openai = new OpenAI({
@@ -146,25 +147,27 @@ interface ParsedCard {
 function parseEvidenceCards(htmlContent: string): ParsedCard[] {
   const cards: ParsedCard[] = [];
 
-  const paragraphs: Array<{ text: string; isBold: boolean; isUnderline: boolean; isHighlight: boolean; html: string }> = [];
+  const paragraphs: Array<{ text: string; isBold: boolean; isUnderline: boolean; isHighlight: boolean; isHeading: boolean; html: string }> = [];
 
-  const blockPattern = /<(?:p|h[1-6])[^>]*>([\s\S]*?)<\/(?:p|h[1-6])>/gi;
+  const blockPattern = /<(p|h[1-6])[^>]*>([\s\S]*?)<\/(?:p|h[1-6])>/gi;
   let match;
   while ((match = blockPattern.exec(htmlContent)) !== null) {
-    const innerHtml = match[1];
+    const tagName = match[1].toLowerCase();
+    const innerHtml = match[2];
     const text = innerHtml.replace(/<[^>]*>/g, "").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/\s+/g, " ").trim();
     if (!text) continue;
 
     const isBold = /<strong|<b[\s>]|font-weight:\s*bold/i.test(innerHtml);
     const isUnderline = /<u[\s>]|text-decoration[^"]*underline/i.test(innerHtml);
     const isHighlight = /background-color|<mark/i.test(innerHtml);
-    const isHeading = /^<h[1-6]/i.test(match[0]);
+    const isHeading = /^h[1-6]$/.test(tagName);
 
     paragraphs.push({
       text,
       isBold: isBold || isHeading,
       isUnderline,
       isHighlight,
+      isHeading,
       html: innerHtml,
     });
   }
@@ -196,11 +199,18 @@ function parseEvidenceCards(htmlContent: string): ParsedCard[] {
   while (i < paragraphs.length) {
     const p = paragraphs[i];
 
+    if (p.isHeading) {
+      i++;
+      continue;
+    }
+
     if (isTagLine(p.text, p.isBold, p.isUnderline)) {
       const tag = p.text;
       let cite = "";
       let bodyParts: string[] = [];
       let j = i + 1;
+
+      while (j < paragraphs.length && paragraphs[j].isHeading) j++;
 
       if (j < paragraphs.length && isCiteLine(paragraphs[j].text)) {
         cite = paragraphs[j].text;
@@ -209,6 +219,7 @@ function parseEvidenceCards(htmlContent: string): ParsedCard[] {
 
       while (j < paragraphs.length) {
         const next = paragraphs[j];
+        if (next.isHeading) break;
         if (isTagLine(next.text, next.isBold, next.isUnderline) && !isCiteLine(next.text)) break;
         if (isCiteLine(next.text) && bodyParts.length > 0) break;
         bodyParts.push(next.text);
@@ -917,6 +928,200 @@ IMPORTANT: contentionIndex MUST be a 0-based integer matching the contentions ar
     } catch (error: any) {
       console.error("Card search error:", error);
       res.status(500).json({ error: "Card search failed" });
+    }
+  });
+
+  app.post("/api/documents/reparse-all-cards", async (req, res) => {
+    try {
+      const allDocs = await storage.getAllDocuments();
+      const results: Array<{ id: number; filename: string; cardCount: number }> = [];
+
+      for (const doc of allDocs) {
+        const filePath = path.join(uploadDir, doc.filename);
+        if (!fs.existsSync(filePath)) continue;
+
+        try {
+          const result = await mammoth.convertToHtml({ path: filePath });
+          const parsedCards = parseEvidenceCards(result.value);
+          await storage.deleteCardsByDocumentId(doc.id);
+
+          if (parsedCards.length > 0) {
+            const cardData = parsedCards.map((c, i) => ({
+              documentId: doc.id,
+              tag: c.tag,
+              cite: c.cite,
+              body: c.body,
+              cardIndex: i,
+              isAnalytic: c.isAnalytic,
+            }));
+            await storage.createCards(cardData);
+          }
+          results.push({ id: doc.id, filename: doc.originalFilename, cardCount: parsedCards.length });
+        } catch (e) {
+          results.push({ id: doc.id, filename: doc.originalFilename, cardCount: -1 });
+        }
+      }
+
+      res.json({ success: true, documents: results, total: results.length });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message || "Reparse all failed" });
+    }
+  });
+
+  app.get("/api/documents/:id/download-section", async (req, res) => {
+    try {
+      const doc = await storage.getDocument(parseInt(req.params.id));
+      if (!doc) return res.status(404).json({ error: "Document not found" });
+
+      const heading = req.query.heading as string;
+      if (!heading) return res.status(400).json({ error: "heading query param required" });
+
+      const filePath = path.join(uploadDir, doc.filename);
+      if (!fs.existsSync(filePath)) {
+        return res.status(404).json({ error: "File not found on disk" });
+      }
+
+      const fileBuffer = fs.readFileSync(filePath);
+      const zip = await JSZip.loadAsync(fileBuffer);
+      const documentXml = await zip.file("word/document.xml")?.async("string");
+      if (!documentXml) {
+        return res.status(500).json({ error: "Invalid docx format" });
+      }
+
+      const normalizedHeading = heading.toLowerCase().replace(/[:\-–—]/g, " ").replace(/\s+/g, " ").trim();
+
+      const bodyChildPattern = /<w:p[\s>][\s\S]*?<\/w:p>|<w:tbl[\s>][\s\S]*?<\/w:tbl>/g;
+      const allParagraphs = documentXml.match(bodyChildPattern) || [];
+
+      function extractText(pXml: string): string {
+        const textMatches = pXml.match(/<w:t[^>]*>([\s\S]*?)<\/w:t>/g) || [];
+        return textMatches.map(t => t.replace(/<[^>]*>/g, "")).join("").trim();
+      }
+
+      function getHeadingLevel(pXml: string): number | null {
+        const styleMatch = pXml.match(/<w:pStyle w:val="([^"]*?)"/);
+        if (!styleMatch) return null;
+        const style = styleMatch[1].toLowerCase();
+        const headingMatch = style.match(/heading(\d)/);
+        if (headingMatch) return parseInt(headingMatch[1]);
+        if (style === "title") return 1;
+        return null;
+      }
+
+      let sectionStart = -1;
+      let sectionLevel = 0;
+
+      for (let i = 0; i < allParagraphs.length; i++) {
+        const text = extractText(allParagraphs[i]).toLowerCase().replace(/[:\-–—]/g, " ").replace(/\s+/g, " ").trim();
+        const level = getHeadingLevel(allParagraphs[i]);
+        if (level && text.includes(normalizedHeading)) {
+          sectionStart = i;
+          sectionLevel = level;
+          break;
+        }
+        if (!level && text === normalizedHeading) {
+          sectionStart = i;
+          sectionLevel = 99;
+          break;
+        }
+      }
+
+      if (sectionStart === -1) {
+        for (let i = 0; i < allParagraphs.length; i++) {
+          const text = extractText(allParagraphs[i]).toLowerCase().replace(/[:\-–—]/g, " ").replace(/\s+/g, " ").trim();
+          if (text.includes(normalizedHeading)) {
+            sectionStart = i;
+            const level = getHeadingLevel(allParagraphs[i]);
+            sectionLevel = level || 99;
+            break;
+          }
+        }
+      }
+
+      if (sectionStart === -1) {
+        return res.status(404).json({ error: "Section not found in document" });
+      }
+
+      let sectionEnd = allParagraphs.length;
+      let foundContent = false;
+      for (let i = sectionStart + 1; i < allParagraphs.length; i++) {
+        const level = getHeadingLevel(allParagraphs[i]);
+        const text = extractText(allParagraphs[i]);
+        if (!level && text.length > 0) foundContent = true;
+        if (level && level <= sectionLevel && foundContent) {
+          sectionEnd = i;
+          break;
+        }
+        if (level && level < sectionLevel) {
+          sectionEnd = i;
+          break;
+        }
+      }
+
+      if (!foundContent) {
+        let contentStart = sectionStart - 1;
+        let foundBody = false;
+        while (contentStart >= 0) {
+          const level = getHeadingLevel(allParagraphs[contentStart]);
+          const text = extractText(allParagraphs[contentStart]);
+          if (!level && text.length > 20) {
+            foundBody = true;
+          }
+          if (level && level < sectionLevel) {
+            sectionStart = contentStart;
+            break;
+          }
+          if (foundBody && level && level <= sectionLevel) {
+            sectionStart = contentStart;
+            break;
+          }
+          contentStart--;
+        }
+        if (contentStart < 0) sectionStart = 0;
+
+        sectionEnd = allParagraphs.length;
+        for (let i = sectionStart + 1; i < allParagraphs.length; i++) {
+          const lvl = getHeadingLevel(allParagraphs[i]);
+          if (lvl && lvl < sectionLevel) {
+            sectionEnd = i;
+            break;
+          }
+        }
+      }
+
+      const sectionParagraphs = allParagraphs.slice(sectionStart, sectionEnd);
+      const bodyContent = documentXml.match(/<w:body>([\s\S]*)<\/w:body>/);
+      if (!bodyContent) {
+        return res.status(500).json({ error: "Cannot parse document body" });
+      }
+
+      const existingSectPr = bodyContent[1].match(/<w:sectPr[\s\S]*?<\/w:sectPr>/);
+      const sectPr = existingSectPr ? existingSectPr[0] : "<w:sectPr/>";
+      const newBody = `<w:body>${sectionParagraphs.join("")}${sectPr}</w:body>`;
+      const newDocXml = documentXml.replace(/<w:body>[\s\S]*<\/w:body>/, newBody);
+
+      const newZip = new JSZip();
+      for (const [zipPath, zipEntry] of Object.entries(zip.files)) {
+        if (zipEntry.dir) {
+          newZip.folder(zipPath);
+        } else if (zipPath === "word/document.xml") {
+          newZip.file(zipPath, newDocXml);
+        } else {
+          const content = await zipEntry.async("uint8array");
+          newZip.file(zipPath, content);
+        }
+      }
+
+      const outputBuffer = await newZip.generateAsync({ type: "nodebuffer" });
+      const sanitizedHeading = heading.replace(/[^a-zA-Z0-9\s]/g, "").replace(/\s+/g, "_").slice(0, 50);
+      const outputFilename = `${sanitizedHeading}_from_${doc.originalFilename}`;
+
+      res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+      res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(outputFilename)}"`);
+      res.send(outputBuffer);
+    } catch (error: any) {
+      console.error("Section download error:", error);
+      res.status(500).json({ error: error.message || "Section download failed" });
     }
   });
 

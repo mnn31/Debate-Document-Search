@@ -10,8 +10,8 @@ import {
 import { randomUUID } from "crypto";
 
 const DEBATE_SYNONYMS: Record<string, string[]> = {
-  "at": ["answer to", "a2", "answers to"],
-  "a2": ["answer to", "at", "answers to"],
+  "at": ["answer to", "a2", "answers to", "at:"],
+  "a2": ["answer to", "at", "answers to", "a2:"],
   "heg": ["hegemony", "china rise", "us primacy", "unipolarity"],
   "dedev": ["degrowth", "growth bad", "economic decline good"],
   "cap": ["capitalism"],
@@ -22,6 +22,8 @@ const DEBATE_SYNONYMS: Record<string, string[]> = {
   "da": ["disadvantage"],
   "cp": ["counterplan"],
   "k": ["kritik", "critique"],
+  "tradeoff": ["trade off", "trade-off"],
+  "ftc": ["federal trade commission", "ftc tradeoff", "ftc trade-off"],
 };
 
 function expandSearchTerms(terms: string[]): string[] {
@@ -219,13 +221,23 @@ export class DatabaseStorage implements IStorage {
     const searchTerms = expandSearchTerms(rawTerms);
     const likePatterns = searchTerms.map((term) => `%${term}%`);
 
+    const normalizedQuery = query.toLowerCase().replace(/[:\-_\/]/g, " ").replace(/\s+/g, " ").trim();
+    const normalizedPattern = `%${normalizedQuery}%`;
+
     const conditions = likePatterns.flatMap((pattern) => [
       sql`LOWER(${documents.originalFilename}) LIKE ${pattern}`,
       sql`LOWER(${documents.searchIndex}) LIKE ${pattern}`,
       sql`LOWER(${documents.textContent}) LIKE ${pattern}`,
       sql`EXISTS (SELECT 1 FROM unnest(${documents.tags}) AS tag WHERE LOWER(tag) LIKE ${pattern})`,
       sql`EXISTS (SELECT 1 FROM unnest(${documents.aiKeywords}) AS kw WHERE LOWER(kw) LIKE ${pattern})`,
+      sql`EXISTS (SELECT 1 FROM document_sections ds WHERE ds.document_id = ${documents.id} AND LOWER(ds.heading) LIKE ${pattern})`,
+      sql`EXISTS (SELECT 1 FROM evidence_cards ec WHERE ec.document_id = ${documents.id} AND LOWER(ec.tag) LIKE ${pattern})`,
     ]);
+
+    const normalizedConditions = [
+      sql`EXISTS (SELECT 1 FROM document_sections ds WHERE ds.document_id = ${documents.id} AND LOWER(REPLACE(REPLACE(REPLACE(ds.heading, ':', ' '), '-', ' '), '–', ' ')) LIKE ${normalizedPattern})`,
+      sql`EXISTS (SELECT 1 FROM evidence_cards ec WHERE ec.document_id = ${documents.id} AND LOWER(REPLACE(REPLACE(REPLACE(ec.tag, ':', ' '), '-', ' '), '–', ' ')) LIKE ${normalizedPattern})`,
+    ];
 
     const fullQuery = query.toLowerCase().replace(/[_-]/g, " ");
     const fullQueryPattern = `%${fullQuery}%`;
@@ -233,6 +245,16 @@ export class DatabaseStorage implements IStorage {
     const filenameMatchCount = searchTerms.map((term) => {
       const p = `%${term}%`;
       return sql`CASE WHEN LOWER(REPLACE(REPLACE(${documents.originalFilename}, '_', ' '), '-', ' ')) LIKE ${p} THEN 1 ELSE 0 END`;
+    }).reduce((acc, curr) => sql`${acc} + ${curr}`);
+
+    const sectionHeadingMatchCount = searchTerms.map((term) => {
+      const p = `%${term}%`;
+      return sql`(SELECT COUNT(*)::int FROM document_sections ds WHERE ds.document_id = ${documents.id} AND LOWER(ds.heading) LIKE ${p})`;
+    }).reduce((acc, curr) => sql`${acc} + ${curr}`);
+
+    const cardTagMatchCount = searchTerms.map((term) => {
+      const p = `%${term}%`;
+      return sql`(SELECT COUNT(*)::int FROM evidence_cards ec WHERE ec.document_id = ${documents.id} AND LOWER(ec.tag) LIKE ${p})`;
     }).reduce((acc, curr) => sql`${acc} + ${curr}`);
 
     const rankExpr = sql<number>`(
@@ -247,9 +269,18 @@ export class DatabaseStorage implements IStorage {
         )`;
       }).reduce((acc, curr) => sql`${acc} + ${curr}`)}
       + (${filenameMatchCount}) * (${filenameMatchCount}) * 50
+      + LEAST(${sectionHeadingMatchCount}, 10) * 80
+      + LEAST(${cardTagMatchCount}, 10) * 60
       + CASE WHEN LOWER(REPLACE(REPLACE(${documents.originalFilename}, '_', ' '), '-', ' ')) LIKE ${fullQueryPattern} THEN 300 ELSE 0 END
       + CASE WHEN EXISTS (SELECT 1 FROM unnest(${documents.tags}) AS tag WHERE LOWER(tag) LIKE ${fullQueryPattern}) THEN 200 ELSE 0 END
       + CASE WHEN EXISTS (SELECT 1 FROM unnest(${documents.aiKeywords}) AS kw WHERE LOWER(kw) LIKE ${fullQueryPattern}) THEN 150 ELSE 0 END
+      + CASE WHEN EXISTS (SELECT 1 FROM document_sections ds WHERE ds.document_id = ${documents.id} AND ${
+        rawTerms.map((term) => {
+          const p = `%${term}%`;
+          return sql`LOWER(REPLACE(REPLACE(REPLACE(ds.heading, ':', ' '), '-', ' '), '–', ' ')) LIKE ${p}`;
+        }).reduce((acc, curr) => sql`${acc} AND ${curr}`)
+      }) THEN 800 ELSE 0 END
+      + CASE WHEN EXISTS (SELECT 1 FROM evidence_cards ec WHERE ec.document_id = ${documents.id} AND LOWER(ec.tag) LIKE ${fullQueryPattern}) THEN 250 ELSE 0 END
     )`;
 
     const results = await db
@@ -258,7 +289,7 @@ export class DatabaseStorage implements IStorage {
         rank: rankExpr,
       })
       .from(documents)
-      .where(or(...conditions))
+      .where(or(...conditions, ...normalizedConditions))
       .orderBy(sql`${rankExpr} DESC`)
       .limit(20);
 

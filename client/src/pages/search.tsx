@@ -150,6 +150,13 @@ export default function SearchPage() {
     link.click();
   };
 
+  const handleSectionDownload = (docId: number, heading: string) => {
+    const link = document.createElement("a");
+    link.href = `/api/documents/${docId}/download-section?heading=${encodeURIComponent(heading)}`;
+    link.download = `${heading.replace(/[^a-zA-Z0-9\s]/g, "").slice(0, 50)}.docx`;
+    link.click();
+  };
+
   const toggleSections = (docId: number) => {
     setExpandedSections((prev) => {
       const next = new Set(prev);
@@ -354,9 +361,23 @@ export default function SearchPage() {
                           className="text-sm rounded-md bg-muted/50 p-3 space-y-1"
                           data-testid={`section-${section.id}`}
                         >
-                          {section.heading && (
-                            <p className="font-medium text-xs text-primary">{section.heading}</p>
-                          )}
+                          <div className="flex items-start justify-between gap-2">
+                            {section.heading && (
+                              <p className="font-medium text-xs text-primary flex-1">{section.heading}</p>
+                            )}
+                            {section.heading && (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-6 text-xs shrink-0 gap-1"
+                                onClick={() => handleSectionDownload(result.document.id, section.heading)}
+                                data-testid={`button-download-section-${section.id}`}
+                              >
+                                <Download className="w-3 h-3" />
+                                Section
+                              </Button>
+                            )}
+                          </div>
                           <p className="text-muted-foreground line-clamp-3">
                             {section.content.slice(0, 300)}
                             {section.content.length > 300 ? "..." : ""}
