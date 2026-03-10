@@ -42,7 +42,7 @@ AI-powered evidence management tool for Public Forum Debate. Upload .docx eviden
 - `users` - basic user table (unused currently)
 - `documents` - uploaded files with tags, extracted text, AI keywords, search index
 - `document_sections` - parsed sections (by headings) for granular search
-- `evidence_cards` - individual parsed cards with tag/cite/body, isAnalytic flag, customTag/customCite for user edits
+- `evidence_cards` - individual parsed cards with tag/cite/body, isAnalytic flag, customTag/customCite for user edits, sectionHeading for section context
 
 ## Important: AI Token Limits
 - gpt-5-nano uses ~88% of completion tokens for internal reasoning
@@ -84,7 +84,7 @@ AI-powered evidence management tool for Public Forum Debate. Upload .docx eviden
 - Section heading match count per document gets scaled bonus (up to 10 matches × 80)
 - Section headings are normalized (colons, dashes stripped) for matching "AT tradeoff" → "AT: FTC Tradeoff"
 - Evidence card parser: h1-h2 = section dividers (skipped), h3 = section divider unless followed by cite, h4+ = card tags; `<p>` with bold/underline also treated as tags
-- Card search also matches section headings (normalized) with +300 rank bonus, returns matching section heading for download
+- Card search uses stored `sectionHeading` on each card (not document-level lookup) with +500 rank bonus; cards belong to their section and are prioritized when section name matches query
 - jszip used for section download: extracts paragraphs from original .docx XML between heading boundaries
 
 ## Environment

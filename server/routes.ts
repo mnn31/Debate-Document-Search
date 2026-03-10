@@ -142,6 +142,7 @@ interface ParsedCard {
   cite: string;
   body: string;
   isAnalytic: boolean;
+  sectionHeading: string | null;
 }
 
 function parseEvidenceCards(htmlContent: string): ParsedCard[] {
@@ -214,11 +215,13 @@ function parseEvidenceCards(htmlContent: string): ParsedCard[] {
     return false;
   }
 
+  let currentSectionHeading: string | null = null;
   let i = 0;
   while (i < paragraphs.length) {
     const p = paragraphs[i];
 
     if (isSectionDivider(i)) {
+      currentSectionHeading = p.text;
       i++;
       continue;
     }
@@ -246,9 +249,9 @@ function parseEvidenceCards(htmlContent: string): ParsedCard[] {
       const body = bodyParts.join("\n\n");
 
       if (cite || body.length > 50) {
-        cards.push({ tag, cite, body, isAnalytic: false });
+        cards.push({ tag, cite, body, isAnalytic: false, sectionHeading: currentSectionHeading });
       } else if (body.length === 0 || body.length <= 50) {
-        cards.push({ tag, cite: "", body, isAnalytic: true });
+        cards.push({ tag, cite: "", body, isAnalytic: true, sectionHeading: currentSectionHeading });
       }
 
       i = j;
@@ -414,6 +417,7 @@ export async function registerRoutes(
           body: c.body,
           cardIndex: i,
           isAnalytic: c.isAnalytic,
+          sectionHeading: c.sectionHeading,
         }));
         await storage.createCards(cardData);
       }
@@ -887,6 +891,7 @@ IMPORTANT: contentionIndex MUST be a 0-based integer matching the contentions ar
           body: c.body,
           cardIndex: i,
           isAnalytic: c.isAnalytic,
+          sectionHeading: c.sectionHeading,
         }));
         await storage.createCards(cardData);
       }
@@ -971,6 +976,7 @@ IMPORTANT: contentionIndex MUST be a 0-based integer matching the contentions ar
               body: c.body,
               cardIndex: i,
               isAnalytic: c.isAnalytic,
+              sectionHeading: c.sectionHeading,
             }));
             await storage.createCards(cardData);
           }

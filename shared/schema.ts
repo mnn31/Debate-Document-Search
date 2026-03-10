@@ -65,6 +65,7 @@ export const evidenceCards = pgTable("evidence_cards", {
   isAnalytic: boolean("is_analytic").notNull().default(false),
   customTag: text("custom_tag"),
   customCite: text("custom_cite"),
+  sectionHeading: text("section_heading"),
 }, (table) => [
   index("idx_cards_document_id").on(table.documentId),
 ]);

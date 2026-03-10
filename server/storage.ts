@@ -179,10 +179,8 @@ export class DatabaseStorage implements IStorage {
     const likePatterns = searchTerms.map((term) => `%${term}%`);
 
     const normalizedTerms = rawTerms.map((t) => t.replace(/[:\-_\/–—.]/g, "")).filter((t) => t.length > 0);
-    const normalizedQuery = normalizedTerms.join(" ");
-    const normalizedPattern = `%${normalizedQuery}%`;
 
-    const headingNormSql = sql`LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(ds.heading, ':', ' '), '-', ' '), '–', ' '), '—', ' '), '/', ' '), '_', ' '))`;
+    const cardSectionNorm = sql`LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(${evidenceCards.sectionHeading}, ':', ' '), '-', ' '), '–', ' '), '—', ' '), '/', ' '), '_', ' '))`;
 
     const conditions = likePatterns.flatMap((pattern) => [
       sql`LOWER(${evidenceCards.tag}) LIKE ${pattern}`,
@@ -190,20 +188,18 @@ export class DatabaseStorage implements IStorage {
       sql`LOWER(${evidenceCards.body}) LIKE ${pattern}`,
     ]);
 
-    const normalizedHeadingConditions = normalizedTerms.map((term) => {
-      const p = `%${term}%`;
-      return sql`EXISTS (SELECT 1 FROM document_sections ds WHERE ds.document_id = ${evidenceCards.documentId} AND ${headingNormSql} LIKE ${p})`;
-    });
+    const hasSectionTerms = normalizedTerms.length > 0;
+    const sectionHeadingCondition = hasSectionTerms
+      ? sql`(${
+          normalizedTerms.map((term) => {
+            const p = `%${term}%`;
+            return sql`${cardSectionNorm} LIKE ${p}`;
+          }).reduce((acc, curr) => sql`${acc} AND ${curr}`)
+        })`
+      : null;
 
     const fullQuery = query.toLowerCase();
     const fullQueryPattern = `%${fullQuery}%`;
-
-    const sectionHeadingExpr = sql<string | null>`(SELECT ds.heading FROM document_sections ds WHERE ds.document_id = ${evidenceCards.documentId} AND (${
-      normalizedTerms.map((term) => {
-        const p = `%${term}%`;
-        return sql`${headingNormSql} LIKE ${p}`;
-      }).reduce((acc, curr) => sql`${acc} AND ${curr}`)
-    }) ORDER BY LENGTH(ds.heading) LIMIT 1)`;
 
     const rankExpr = sql<number>`(
       ${searchTerms.map((term) => {
@@ -215,24 +211,22 @@ export class DatabaseStorage implements IStorage {
         )`;
       }).reduce((acc, curr) => sql`${acc} + ${curr}`)}
       + CASE WHEN LOWER(${evidenceCards.tag}) LIKE ${fullQueryPattern} THEN 200 ELSE 0 END
-      + CASE WHEN EXISTS (SELECT 1 FROM document_sections ds WHERE ds.document_id = ${evidenceCards.documentId} AND ${
-        normalizedTerms.map((term) => {
-          const p = `%${term}%`;
-          return sql`${headingNormSql} LIKE ${p}`;
-        }).reduce((acc, curr) => sql`${acc} AND ${curr}`)
-      }) THEN 300 ELSE 0 END
+      ${sectionHeadingCondition ? sql`+ CASE WHEN ${sectionHeadingCondition} THEN 500 ELSE 0 END` : sql``}
     )`;
+
+    const whereConditions = [...conditions];
+    if (sectionHeadingCondition) whereConditions.push(sectionHeadingCondition);
 
     const results = await db
       .select({
         card: evidenceCards,
         doc: documents,
         rank: rankExpr,
-        sectionHeading: sectionHeadingExpr,
+        sectionHeading: evidenceCards.sectionHeading,
       })
       .from(evidenceCards)
       .innerJoin(documents, eq(evidenceCards.documentId, documents.id))
-      .where(or(...conditions, ...normalizedHeadingConditions))
+      .where(or(...whereConditions))
       .orderBy(sql`${rankExpr} DESC`)
       .limit(30);
 

@@ -20,6 +20,7 @@ interface EvidenceCard {
   isAnalytic: boolean;
   customTag: string | null;
   customCite: string | null;
+  sectionHeading: string | null;
 }
 
 interface DocumentCardsResponse {
@@ -198,9 +199,19 @@ export default function DocumentPage() {
             const isRecut = recutCardId === card.id;
             const displayCite = card.customCite || card.cite;
             const hasRecut = /recut\s+/i.test(displayCite);
+            const prevCard = index > 0 ? data.cards[index - 1] : null;
+            const showSectionHeader = card.sectionHeading && card.sectionHeading !== prevCard?.sectionHeading;
 
             return (
-              <Card key={card.id} data-testid={`card-evidence-${card.id}`} className={card.isAnalytic ? "border-dashed" : ""}>
+              <div key={card.id}>
+              {showSectionHeader && (
+                <div className="flex items-center gap-3 pt-4 pb-1" data-testid={`section-header-${index}`}>
+                  <div className="h-px flex-1 bg-border" />
+                  <span className="text-xs font-semibold text-primary uppercase tracking-wide">{card.sectionHeading}</span>
+                  <div className="h-px flex-1 bg-border" />
+                </div>
+              )}
+              <Card data-testid={`card-evidence-${card.id}`} className={card.isAnalytic ? "border-dashed" : ""}>
                 <CardHeader className="pb-2">
                   <div className="flex items-start justify-between gap-2">
                     <div className="flex-1 min-w-0 space-y-1">
@@ -304,6 +315,7 @@ export default function DocumentPage() {
                   )}
                 </CardContent>
               </Card>
+              </div>
             );
           })}
         </div>
