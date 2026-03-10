@@ -276,8 +276,45 @@ function parseAiJson(raw: string): any {
     if (arrMatch) {
       try { return JSON.parse(arrMatch[0]); } catch {}
     }
+    const truncFix = repairTruncatedJson(content);
+    if (truncFix) return truncFix;
     return null;
   }
+}
+
+function repairTruncatedJson(raw: string): any {
+  let s = raw.trim();
+  if (!s.startsWith("{") && !s.startsWith("[")) {
+    const idx = s.indexOf("{");
+    if (idx < 0) return null;
+    s = s.slice(idx);
+  }
+  for (let attempts = 0; attempts < 20; attempts++) {
+    try { return JSON.parse(s); } catch {}
+    const lastOpen = Math.max(s.lastIndexOf("{"), s.lastIndexOf("["));
+    const lastClose = Math.max(s.lastIndexOf("}"), s.lastIndexOf("]"));
+    if (lastOpen > lastClose) {
+      s = s.slice(0, lastOpen);
+    } else {
+      s = s.slice(0, lastClose);
+    }
+    let opens = 0, closes = 0;
+    for (const c of s) {
+      if (c === "{" || c === "[") opens++;
+      if (c === "}" || c === "]") closes++;
+    }
+    while (closes < opens) {
+      const lastBrace = s.lastIndexOf("{");
+      const lastBrack = s.lastIndexOf("[");
+      if (lastBrace > lastBrack) {
+        s += "}";
+      } else {
+        s += "]";
+      }
+      closes++;
+    }
+  }
+  return null;
 }
 
 async function generateAiKeywordsAndTags(
@@ -735,27 +772,50 @@ Order by relevance. Only include truly relevant docs.`,
       const filePath = req.file.path;
       const result = await mammoth.convertToHtml({ path: filePath });
       const htmlContent = result.value;
-      const plainText = htmlContent.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+
+      const opponentCards = parseEvidenceCards(htmlContent);
+      const sectionGroups: Map<string, string[]> = new Map();
+      for (const card of opponentCards) {
+        const section = card.sectionHeading || "General";
+        if (!sectionGroups.has(section)) sectionGroups.set(section, []);
+        sectionGroups.get(section)!.push(card.tag.slice(0, 120));
+      }
+
+      let caseSummary = "";
+      if (opponentCards.length >= 2) {
+        for (const [section, tags] of sectionGroups) {
+          caseSummary += `\n== ${section}\n`;
+          tags.forEach((t, i) => { caseSummary += `  Card ${i + 1}: ${t}\n`; });
+        }
+        caseSummary = caseSummary.slice(0, 8000);
+      } else {
+        const plainText = htmlContent.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+        caseSummary = plainText.slice(0, 8000);
+      }
+      console.log("OPPONENT CASE PARSED:", opponentCards.length, "cards in", sectionGroups.size, "sections");
 
       const allDocs = await storage.getAllDocuments();
       if (allDocs.length === 0) {
         cleanupFile(filePath);
-        return res.json({ contentions: [], responses: [] });
+        return res.json({ contentions: [], responses: [], responsePaths: [] });
       }
 
       const docSummaries = await Promise.all(
         allDocs.slice(0, 30).map(async (doc) => {
-          const sections = await storage.getSectionsByDocumentId(doc.id);
+          const cards = await storage.getCardsByDocumentId(doc.id);
+          const uniqueSections = [...new Set(cards.map((c) => c.sectionHeading).filter(Boolean))];
           return {
             id: doc.id,
             filename: doc.originalFilename,
-            tags: doc.tags,
-            aiKeywords: doc.aiKeywords.slice(0, 15),
-            sectionHeadings: sections.map((s) => s.heading).filter(Boolean).slice(0, 10),
-            contentPreview: doc.textContent.slice(0, 400),
+            sections: uniqueSections.slice(0, 15),
+            cardCount: cards.length,
           };
         })
       );
+
+      const libSummary = docSummaries.map((d) =>
+        `${d.filename} (${d.cardCount} cards) | Sections: ${d.sections.join(", ")}`
+      ).join("\n");
 
       const aiResponse = await openai.chat.completions.create({
         model: "gpt-5-nano",
@@ -764,82 +824,113 @@ Order by relevance. Only include truly relevant docs.`,
             role: "user",
             content: `${DEBATE_TERMINOLOGY}
 
-You are a PF debate case analyzer. Break down this opponent's case into its argument structure, then find responses from my evidence library.
+You are a PF debate case analyzer. The opponent's case has been parsed into section headings and card tags.
 
-STEP 1: Break down each contention into its structure:
-- What is the Uniqueness (UQ)? What's the current state of the world?
-- What is the Link (L)? How does the resolution connect?
-- What are the Internal Links (IL)? The chain of consequences?
-- What is the terminal Impact (!)? The final bad/good thing?
+TASK 1: Identify ALL contentions/advantages/disadvantages. Each section heading like "1AC---Crypto ADV" is a separate contention. For each, trace UQ → Link(s) → Internal Link(s) → Impact using the card tags.
 
-STEP 2: For EACH part of their argument chain, find responses from my evidence library. Types of responses:
-- NUQ (Nonunique): Evidence showing the impact is already happening
-- NL (No Link): Evidence showing the resolution doesn't cause this
-- L/T (Link Turn): Evidence showing the resolution actually does the OPPOSITE
-- N! (No Impact): Evidence showing the consequence doesn't actually matter
-- !/T (Impact Turn): Evidence showing the "bad" thing is actually GOOD
-- General responses: Any evidence that challenges their argument
+TASK 2: For each contention, suggest UP TO 5 key responses. Types: NUQ, NL, L/T, N!, !/T.
+CRITICAL FOR searchQuery: Look at my library filenames and card tags. Pick the MOST RELEVANT ones.
+- If opponent says "Golden Dome bad", search "Golden Dome Good" (my library has that file!)
+- If opponent's impact is nuclear war, search "Nuclear War Good" or "Wipeout" 
+- If opponent says "crypto regulation bad", search cards about crypto regulation benefits
+- NEVER use generic terms like "No Link" or "Impact Turn" as searchQuery — use SPECIFIC topic words from my library
+
+TASK 3: Group into 2-3 responsePaths. CRITICAL: L/T + !/T on SAME contention = double turn (FORBIDDEN).
 
 OPPONENT'S CASE:
-${plainText.slice(0, 5000)}
+${caseSummary}
 
-MY EVIDENCE LIBRARY:
-${docSummaries.map((d) => `ID:${d.id}|${d.filename}|Tags:${d.tags.join(",")}|Keywords:${d.aiKeywords.join(",")}|Sections:${d.sectionHeadings.join(",")}`).join("\n")}
+MY LIBRARY:
+${libSummary}
 
-Return ONLY JSON with this structure:
-{
-  "contentions": [
-    {
-      "name": "Contention name/title",
-      "summary": "One sentence summary",
-      "structure": {
-        "uniqueness": "What they claim about the status quo",
-        "link": "How the resolution connects",
-        "internalLinks": ["chain step 1", "chain step 2"],
-        "impact": "Terminal impact"
-      }
-    }
-  ],
-  "responses": [
-    {
-      "targetContention": "Which contention this responds to",
-      "responseType": "NUQ|NL|L/T|N!|!/T|General",
-      "responseLabel": "Short label like 'Link Turn - Econ Growth'",
-      "explanation": "One sentence explanation of how this responds",
-      "contentionIndex": 0-based index matching the contentions array,
-      "docId": number,
-      "docFilename": "filename",
-      "sectionHint": "which section to look at"
-    }
-  ]
-}
-
-IMPORTANT: contentionIndex MUST be a 0-based integer matching the contentions array index. If a response applies to contention 1, use contentionIndex: 0. Only use real docId values from the MY EVIDENCE LIBRARY list above. If no matching doc exists, use docId: 0 and docFilename: "No match in library".`,
+Return ONLY valid JSON:
+{"contentions":[{"name":"name","summary":"sentence","structure":{"uniqueness":"squo","links":["L1"],"internalLinks":["IL1"],"impact":"terminal"}}],"responses":[{"contentionIndex":0,"targetPart":"uniqueness|link|internalLink|impact","targetPartIndex":0,"responseType":"NUQ|NL|L/T|N!|!/T","responseLabel":"label","explanation":"why","searchQuery":"specific topic words from library"}],"responsePaths":[{"name":"name","description":"desc","responseIndices":[0,1]}]}`,
           },
         ],
-        max_completion_tokens: 8192,
+        max_completion_tokens: 16384,
       });
 
       const aiContent = aiResponse.choices[0]?.message?.content || "{}";
+      console.log("AI RAW (first 500):", aiContent.slice(0, 500));
       const parsed = parseAiJson(aiContent);
+      console.log("PARSED:", parsed ? "OK" : "FAILED", "contentions:", parsed?.contentions?.length, "responses:", parsed?.responses?.length);
       cleanupFile(filePath);
 
-      if (!parsed) {
-        return res.json({ contentions: [], responses: [], caseText: plainText.slice(0, 2000) });
+      if (!parsed || !parsed.contentions?.length) {
+        return res.json({ contentions: [], responses: [], responsePaths: [], caseText: caseSummary.slice(0, 2000) });
       }
 
       const validDocIds = new Set(allDocs.map((d) => d.id));
-      const validatedResponses = (parsed.responses || []).map((r: any) => ({
-        ...r,
-        contentionIndex: typeof r.contentionIndex === "number" ? r.contentionIndex : 0,
-        docId: validDocIds.has(r.docId) ? r.docId : 0,
-        docFilename: validDocIds.has(r.docId) ? r.docFilename : (r.docFilename || "No match in library"),
-      }));
+      const docMap = new Map(allDocs.map((d) => [d.id, d]));
+
+      const enrichedResponses = await Promise.all(
+        (parsed.responses || []).map(async (r: any, idx: number) => {
+          const searchQuery = r.searchQuery || r.responseLabel || "";
+          let cards: Array<{ card: any; doc: any; rank: number; sectionHeading: string | null }> = [];
+
+          if (searchQuery) {
+            try {
+              cards = await storage.searchCards(searchQuery);
+            } catch (e) {}
+          }
+
+          if (cards.length === 0 && r.sectionHint) {
+            try {
+              cards = await storage.searchCards(r.sectionHint);
+            } catch (e) {}
+          }
+
+          const topCards = cards.slice(0, 3).map((c) => ({
+            cardId: c.card.id,
+            documentId: c.card.documentId,
+            tag: c.card.customTag || c.card.tag,
+            cite: c.card.customCite || c.card.cite,
+            body: c.card.body?.slice(0, 300) || "",
+            sectionHeading: c.sectionHeading || c.card.sectionHeading,
+            docFilename: c.doc.originalFilename,
+            rank: c.rank,
+          }));
+
+          return {
+            contentionIndex: typeof r.contentionIndex === "number" ? r.contentionIndex : 0,
+            targetPart: r.targetPart || "general",
+            targetPartIndex: typeof r.targetPartIndex === "number" ? r.targetPartIndex : 0,
+            responseType: r.responseType || "General",
+            responseLabel: r.responseLabel || "",
+            explanation: r.explanation || "",
+            searchQuery,
+            docId: validDocIds.has(r.docId) ? r.docId : (topCards.length > 0 ? topCards[0].documentId : 0),
+            docFilename: validDocIds.has(r.docId)
+              ? (docMap.get(r.docId)?.originalFilename || r.docFilename || "")
+              : (topCards.length > 0 ? topCards[0].docFilename : "No match"),
+            sectionHint: r.sectionHint || (topCards.length > 0 ? topCards[0].sectionHeading : ""),
+            cards: topCards,
+          };
+        })
+      );
+
+      const responsePaths = (parsed.responsePaths || []).map((p: any) => ({
+        name: p.name || "Unnamed Path",
+        description: p.description || "",
+        responseIndices: Array.isArray(p.responseIndices) ? p.responseIndices.filter((i: any) => typeof i === "number" && i < enrichedResponses.length) : [],
+      })).filter((path: any) => {
+        const pathResponses = path.responseIndices.map((i: number) => enrichedResponses[i]).filter(Boolean);
+        const contentionGroups = new Map<number, Set<string>>();
+        for (const r of pathResponses) {
+          if (!contentionGroups.has(r.contentionIndex)) contentionGroups.set(r.contentionIndex, new Set());
+          contentionGroups.get(r.contentionIndex)!.add(r.responseType);
+        }
+        for (const [, types] of contentionGroups) {
+          if (types.has("L/T") && types.has("!/T")) return false;
+        }
+        return true;
+      });
 
       res.json({
         contentions: parsed.contentions || [],
-        responses: validatedResponses,
-        caseText: plainText.slice(0, 2000),
+        responses: enrichedResponses,
+        responsePaths,
+        caseText: caseSummary.slice(0, 2000),
       });
     } catch (error: any) {
       console.error("Analyze error:", error);
@@ -847,6 +938,94 @@ IMPORTANT: contentionIndex MUST be a 0-based integer matching the contentions ar
       res.status(500).json({ error: error.message || "Analysis failed" });
     }
   });
+
+  app.post("/api/download-responses", async (req, res) => {
+    try {
+      const { responses, contentions, pathName } = req.body;
+      if (!responses || !Array.isArray(responses)) {
+        return res.status(400).json({ error: "No responses provided" });
+      }
+
+      const zip = new JSZip();
+      let xmlParagraphs = "";
+
+      xmlParagraphs += `<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t>${escapeXml(`Case Analysis Responses${pathName ? ` — ${pathName}` : ""}`)}</w:t></w:r></w:p>`;
+
+      const responsesByContention: Record<number, any[]> = {};
+      for (const r of responses) {
+        const ci = r.contentionIndex || 0;
+        if (!responsesByContention[ci]) responsesByContention[ci] = [];
+        responsesByContention[ci].push(r);
+      }
+
+      for (const [ciStr, contResponses] of Object.entries(responsesByContention)) {
+        const ci = parseInt(ciStr);
+        const contentionName = contentions?.[ci]?.name || `Contention ${ci + 1}`;
+
+        xmlParagraphs += `<w:p><w:pPr><w:pStyle w:val="Heading2"/></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t>${escapeXml(contentionName)}</w:t></w:r></w:p>`;
+
+        for (const r of contResponses) {
+          xmlParagraphs += `<w:p><w:pPr><w:pStyle w:val="Heading3"/></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t>${escapeXml(r.responseType)}: ${escapeXml(r.responseLabel)}</w:t></w:r></w:p>`;
+          xmlParagraphs += `<w:p><w:r><w:rPr><w:i/></w:rPr><w:t>${escapeXml(r.explanation || "")}</w:t></w:r></w:p>`;
+
+          if (r.cards && Array.isArray(r.cards)) {
+            for (const card of r.cards) {
+              xmlParagraphs += `<w:p><w:r><w:rPr><w:b/><w:u w:val="single"/></w:rPr><w:t>${escapeXml(card.tag || "")}</w:t></w:r></w:p>`;
+              if (card.cite) {
+                xmlParagraphs += `<w:p><w:r><w:rPr><w:b/><w:sz w:val="20"/></w:rPr><w:t>${escapeXml(card.cite)}</w:t></w:r></w:p>`;
+              }
+              if (card.body) {
+                const bodyText = card.body.length > 800 ? card.body.slice(0, 800) + "..." : card.body;
+                xmlParagraphs += `<w:p><w:r><w:rPr><w:sz w:val="16"/></w:rPr><w:t>${escapeXml(bodyText)}</w:t></w:r></w:p>`;
+              }
+              xmlParagraphs += `<w:p><w:r><w:t> </w:t></w:r></w:p>`;
+            }
+          }
+        }
+      }
+
+      const docXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:wpc="http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas"
+  xmlns:mo="http://schemas.microsoft.com/office/mac/office/2008/main"
+  xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+  xmlns:mv="urn:schemas-microsoft-com:mac:vml"
+  xmlns:o="urn:schemas-microsoft-com:office:office"
+  xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+  xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"
+  xmlns:v="urn:schemas-microsoft-com:vml"
+  xmlns:wp14="http://schemas.microsoft.com/office/word/2010/wordprocessingDrawing"
+  xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+  xmlns:w10="urn:schemas-microsoft-com:office:word"
+  xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+  xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml"
+  xmlns:wpg="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup"
+  xmlns:wpi="http://schemas.microsoft.com/office/word/2010/wordprocessingInk"
+  xmlns:wne="http://schemas.microsoft.com/office/word/2006/wordml"
+  xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"
+  mc:Ignorable="w14 wp14">
+  <w:body>${xmlParagraphs}<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr></w:body>
+</w:document>`;
+
+      const outZip = new JSZip();
+      outZip.file("[Content_Types].xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>`);
+      outZip.file("_rels/.rels", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`);
+      outZip.file("word/document.xml", docXml);
+      outZip.file("word/_rels/document.xml.rels", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>`);
+
+      const buffer = await outZip.generateAsync({ type: "nodebuffer" });
+      const safeName = pathName ? pathName.replace(/[^a-zA-Z0-9 ]/g, "").slice(0, 50) : "responses";
+      res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+      res.setHeader("Content-Disposition", `attachment; filename="Case_Responses_${safeName}.docx"`);
+      res.send(buffer);
+    } catch (error: any) {
+      console.error("Download responses error:", error);
+      res.status(500).json({ error: error.message || "Download failed" });
+    }
+  });
+
+  function escapeXml(s: string): string {
+    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
+  }
 
   app.post("/api/documents/:id/reindex", async (req, res) => {
     try {

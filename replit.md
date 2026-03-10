@@ -28,7 +28,7 @@ AI-powered evidence management tool for Public Forum Debate. Upload .docx eviden
 2. **AI-powered semantic search** — finds evidence by concept, not just keywords
 3. **Section-level indexing** — parses headings for granular search
 4. **Original file download** — preserves all formatting
-5. **Opponent case analyzer** — breaks down opponent's case into UQ/L/IL/! structure, finds NUQ/NL/L/T/N!/!/T responses from your library
+5. **Opponent case analyzer** — parses opponent case into cards/sections, breaks down each contention's UQ/L/IL/! structure, finds typed responses (NUQ/NL/L/T/N!/!/T) with card-level evidence from library, groups into response paths (no double-turning), download all responses as .docx
 6. **AI keyword indexing** — 30 keywords per doc at upload time for instant search
 7. **Auto-tagging** — AI generates 5-8 categorization tags automatically on upload
 8. **Re-index** — manual re-index button regenerates keywords AND auto-tags
@@ -70,7 +70,8 @@ AI-powered evidence management tool for Public Forum Debate. Upload .docx eviden
 - `POST /api/search/semantic` - AI semantic search
 - `POST /api/search/ai-enhance` - Generate AI summaries for results
 - `POST /api/documents/:id/reindex` - Regenerate AI keywords AND auto-tags
-- `POST /api/analyze-opponent-case` - Break down opponent case, find typed responses
+- `POST /api/analyze-opponent-case` - Parse opponent case into cards, break down contentions, find typed responses with card-level evidence, group into response paths
+- `POST /api/download-responses` - Download selected response cards as a combined .docx
 - `GET /api/documents/:id/cards` - Get all evidence cards for a document
 - `POST /api/documents/:id/reparse-cards` - Re-parse evidence cards from document HTML
 - `PATCH /api/cards/:id/signature` - Update card customTag/customCite (recut signature)
