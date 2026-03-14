@@ -18,6 +18,7 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
+import { downloadUrl } from "@/lib/download";
 import { Download, Trash2, FileText, Tag, Plus, X, FolderOpen, Brain, RefreshCw, Eye } from "lucide-react";
 import { Link } from "wouter";
 interface DocumentListItem {
@@ -89,10 +90,7 @@ export default function LibraryPage() {
   };
 
   const handleDownload = (id: number, filename: string) => {
-    const link = document.createElement("a");
-    link.href = `/api/documents/${id}/download`;
-    link.download = filename;
-    link.click();
+    downloadUrl(`/api/documents/${id}/download`, filename);
   };
 
   return (

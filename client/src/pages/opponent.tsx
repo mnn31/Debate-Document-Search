@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { downloadUrl } from "@/lib/download";
 import { useToast } from "@/hooks/use-toast";
 import { Swords, Upload, FileText, ArrowRight, Download, AlertCircle, Shield, Target, ChevronDown, ChevronUp, Route, MessageSquareQuote } from "lucide-react";
 
@@ -143,10 +144,7 @@ export default function OpponentPage() {
   };
 
   const handleDownloadDoc = (id: number, filename: string) => {
-    const link = document.createElement("a");
-    link.href = `/api/documents/${id}/download`;
-    link.download = filename;
-    link.click();
+    downloadUrl(`/api/documents/${id}/download`, filename);
   };
 
   const handleDownloadResponses = async (responses: ResponseMatch[], contentions: Contention[], pathName?: string) => {
@@ -159,10 +157,7 @@ export default function OpponentPage() {
       if (!res.ok) throw new Error("Download failed");
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = `Case_Responses_${(pathName || "all").replace(/[^a-zA-Z0-9 ]/g, "")}.docx`;
-      link.click();
+      downloadUrl(url, `Case_Responses_${(pathName || "all").replace(/[^a-zA-Z0-9 ]/g, "")}.docx`);
       URL.revokeObjectURL(url);
     } catch (e) {
       toast({ title: "Download failed", variant: "destructive" });

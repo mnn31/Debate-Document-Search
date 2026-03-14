@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { downloadUrl } from "@/lib/download";
 import { useToast } from "@/hooks/use-toast";
 import { ArrowLeft, Download, FileText, Check, X, MessageSquareQuote, RefreshCw, Lightbulb, Pen } from "lucide-react";
 
@@ -103,10 +104,7 @@ export default function DocumentPage() {
 
   const handleDownload = () => {
     if (!data) return;
-    const link = document.createElement("a");
-    link.href = `/api/documents/${docId}/download`;
-    link.download = data.document.originalFilename;
-    link.click();
+    downloadUrl(`/api/documents/${docId}/download`, data.document.originalFilename);
   };
 
   if (!docId) {

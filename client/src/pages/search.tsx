@@ -1,5 +1,6 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { apiRequest } from "@/lib/queryClient";
+import { downloadUrl } from "@/lib/download";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -7,6 +8,8 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Search, Download, FileText, Sparkles, AlertCircle, ChevronDown, ChevronUp, MessageSquareQuote, Eye, Layers } from "lucide-react";
 import { Link } from "wouter";
+
+const QUICK_SEARCHES = ["cap good", "dedev", "AT tradeoff", "!/T", "china heg"];
 
 interface SearchResult {
   document: {
@@ -61,12 +64,15 @@ export default function SearchPage() {
   const [searchMode, setSearchMode] = useState<"documents" | "cards">("documents");
   const [lastSearchedMode, setLastSearchedMode] = useState<"documents" | "cards" | null>(null);
   const searchIdRef = useRef(0);
+  const inputRef = useRef<HTMLInputElement>(null);
 
-  const handleSearch = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const trimmed = query.trim();
-    if (!trimmed) return;
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
 
+  const runSearch = (q: string) => {
+    setQuery(q);
+    if (!q.trim()) return;
     const thisSearchId = ++searchIdRef.current;
     setHasSearched(true);
     setLastSearchedMode(searchMode);
@@ -77,85 +83,85 @@ export default function SearchPage() {
     setIsSearching(true);
     setIsEnhancing(false);
     setSearchError(false);
-
-    try {
-      if (searchMode === "cards") {
-        const res = await apiRequest("POST", "/api/search/cards", { query: trimmed });
-        const data = (await res.json()) as { results: CardResult[] };
-        if (thisSearchId !== searchIdRef.current) return;
-        setCardResults(data.results);
-        setIsSearching(false);
-      } else {
-        const res = await apiRequest("POST", "/api/search", { query: trimmed });
-        const data = (await res.json()) as { results: SearchResult[]; query: string };
-        if (thisSearchId !== searchIdRef.current) return;
-
-        setResults(data.results);
-        setIsSearching(false);
-
-        if (data.results.length > 0) {
-          setIsEnhancing(true);
-
-          const semanticPromise = apiRequest("POST", "/api/search/semantic", { query: trimmed })
-            .then(r => r.json())
-            .then((semData: { results: SearchResult[] }) => {
-              if (thisSearchId !== searchIdRef.current) return;
-              if (semData.results?.length > 0) {
-                setResults(prev => {
-                  const existingMap = new Map(prev.map(r => [r.document.id, r]));
-                  const updated = [...prev];
-                  for (const semResult of semData.results) {
-                    const existing = existingMap.get(semResult.document.id);
-                    if (existing) {
-                      if (semResult.aiSummary && !existing.aiSummary) existing.aiSummary = semResult.aiSummary;
-                      if (semResult.sectionHint && !existing.sectionHint) existing.sectionHint = semResult.sectionHint;
-                    } else {
-                      updated.push({ ...semResult, rank: -1 });
-                    }
-                  }
-                  return updated;
-                });
-              }
-            })
-            .catch(() => {});
-
-          const enhanceIds = data.results.map(r => r.document.id);
-          const enhancePromise = apiRequest("POST", "/api/search/ai-enhance", { query: trimmed, documentIds: enhanceIds })
-            .then(r => r.json())
-            .then((enhData: { summaries: Record<number, { summary: string; sectionHint: string }> }) => {
-              if (thisSearchId !== searchIdRef.current) return;
-              if (enhData.summaries) {
-                setAiSummaries(enhData.summaries);
-              }
-            })
-            .catch(() => {});
-
-          await Promise.allSettled([semanticPromise, enhancePromise]);
+    if (searchMode === "cards") {
+      apiRequest("POST", "/api/search/cards", { query: q.trim() })
+        .then((res) => res.json())
+        .then((data: { results: CardResult[] }) => {
+          if (thisSearchId !== searchIdRef.current) return;
+          setCardResults(data.results);
+          setIsSearching(false);
+        })
+        .catch(() => {
           if (thisSearchId === searchIdRef.current) {
-            setIsEnhancing(false);
+            setSearchError(true);
+            setIsSearching(false);
           }
-        }
-      }
-    } catch {
-      if (thisSearchId === searchIdRef.current) {
-        setSearchError(true);
-        setIsSearching(false);
-      }
+        });
+    } else {
+      apiRequest("POST", "/api/search", { query: q.trim() })
+        .then((res) => res.json())
+        .then((data: { results: SearchResult[]; query: string }) => {
+          if (thisSearchId !== searchIdRef.current) return;
+          setResults(data.results);
+          setIsSearching(false);
+          if (data.results.length > 0) {
+            setIsEnhancing(true);
+            const semanticPromise = apiRequest("POST", "/api/search/semantic", { query: q.trim() })
+              .then((r) => r.json())
+              .then((semData: { results: SearchResult[] }) => {
+                if (thisSearchId !== searchIdRef.current) return;
+                if (semData.results?.length > 0) {
+                  setResults((prev) => {
+                    const existingMap = new Map(prev.map((r) => [r.document.id, r]));
+                    const updated = [...prev];
+                    for (const semResult of semData.results) {
+                      const existing = existingMap.get(semResult.document.id);
+                      if (existing) {
+                        if (semResult.aiSummary && !existing.aiSummary) existing.aiSummary = semResult.aiSummary;
+                        if (semResult.sectionHint && !existing.sectionHint) existing.sectionHint = semResult.sectionHint;
+                      } else {
+                        updated.push({ ...semResult, rank: -1 });
+                      }
+                    }
+                    return updated;
+                  });
+                }
+              })
+              .catch(() => {});
+            const enhanceIds = data.results.map((r) => r.document.id);
+            const enhancePromise = apiRequest("POST", "/api/search/ai-enhance", { query: q.trim(), documentIds: enhanceIds })
+              .then((r) => r.json())
+              .then((enhData: { summaries: Record<number, { summary: string; sectionHint: string }> }) => {
+                if (thisSearchId !== searchIdRef.current) return;
+                if (enhData.summaries) setAiSummaries(enhData.summaries);
+              })
+              .catch(() => {});
+            Promise.allSettled([semanticPromise, enhancePromise]).then(() => {
+              if (thisSearchId === searchIdRef.current) setIsEnhancing(false);
+            });
+          }
+        })
+        .catch(() => {
+          if (thisSearchId === searchIdRef.current) {
+            setSearchError(true);
+            setIsSearching(false);
+          }
+        });
     }
   };
 
+  const handleSearch = (e: React.FormEvent) => {
+    e.preventDefault();
+    runSearch(query.trim());
+  };
+
   const handleDownload = (id: number, filename: string) => {
-    const link = document.createElement("a");
-    link.href = `/api/documents/${id}/download`;
-    link.download = filename;
-    link.click();
+    downloadUrl(`/api/documents/${id}/download`, filename);
   };
 
   const handleSectionDownload = (docId: number, heading: string) => {
-    const link = document.createElement("a");
-    link.href = `/api/documents/${docId}/download-section?heading=${encodeURIComponent(heading)}`;
-    link.download = `${heading.replace(/[^a-zA-Z0-9\s]/g, "").slice(0, 50)}.docx`;
-    link.click();
+    const safeName = heading.replace(/[^a-zA-Z0-9\s]/g, "").slice(0, 50) || "section";
+    downloadUrl(`/api/documents/${docId}/download-section?heading=${encodeURIComponent(heading)}`, `${safeName}.docx`);
   };
 
   const toggleSections = (docId: number) => {
@@ -185,31 +191,51 @@ export default function SearchPage() {
 
   return (
     <div className="max-w-4xl mx-auto p-6 space-y-6">
-      <div className="space-y-2">
-        <h2 className="text-2xl font-bold tracking-tight" data-testid="text-page-title">Search Evidence</h2>
-        <p className="text-muted-foreground">
-          Search your evidence library. Try "cap good", "dedev", "AT tradeoff", or "warming impact turn".
+      <div className="space-y-1">
+        <h2 className="text-2xl font-bold tracking-tight" data-testid="text-page-title">Search</h2>
+        <p className="text-sm text-muted-foreground">
+          Type and hit Enter — e.g. cap good, dedev, !/T. Download full file or just the section.
         </p>
       </div>
 
       <form onSubmit={handleSearch} className="space-y-3" data-testid="form-search">
         <div className="flex gap-2">
           <div className="relative flex-1">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
             <Input
+              ref={inputRef}
               type="search"
-              placeholder="Search arguments, concepts, or impact chains..."
+              placeholder="cap good, dedev, AT tradeoff, !/T…"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               className="pl-9"
+              autoComplete="off"
               data-testid="input-search"
             />
           </div>
           <Button type="submit" disabled={isSearching || !query.trim()} data-testid="button-search">
-            {isSearching ? "Searching..." : "Search"}
+            {isSearching ? "Searching…" : "Search"}
           </Button>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs text-muted-foreground mr-1">Quick:</span>
+          {QUICK_SEARCHES.map((q) => (
+            <Button
+              key={q}
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs font-normal"
+              onClick={() => {
+                setQuery(q);
+                runSearch(q);
+              }}
+              data-testid={`quick-${q.replace(/\s/g, "-")}`}
+            >
+              {q}
+            </Button>
+          ))}
+          <span className="text-xs text-muted-foreground ml-1">|</span>
           <Button
             type="button"
             size="sm"
@@ -219,7 +245,7 @@ export default function SearchPage() {
             data-testid="button-mode-documents"
           >
             <Layers className="w-3 h-3" />
-            Documents
+            Docs
           </Button>
           <Button
             type="button"
@@ -317,6 +343,7 @@ export default function SearchPage() {
                     <Button
                       size="icon"
                       variant="ghost"
+                      title="Download full file"
                       onClick={() => handleDownload(result.document.id, result.document.originalFilename)}
                       data-testid={`button-download-${result.document.id}`}
                     >
@@ -369,13 +396,14 @@ export default function SearchPage() {
                             {section.heading && (
                               <Button
                                 size="sm"
-                                variant="ghost"
+                                variant="outline"
                                 className="h-6 text-xs shrink-0 gap-1"
+                                title="Download this section as .docx"
                                 onClick={() => handleSectionDownload(result.document.id, section.heading)}
                                 data-testid={`button-download-section-${section.id}`}
                               >
                                 <Download className="w-3 h-3" />
-                                Section
+                                Download section
                               </Button>
                             )}
                           </div>
@@ -427,8 +455,9 @@ export default function SearchPage() {
                         <span className="text-primary font-medium">{result.sectionHeading}</span>
                         <Button
                           size="sm"
-                          variant="ghost"
+                          variant="outline"
                           className="h-5 text-[10px] shrink-0 gap-1 px-1.5"
+                          title="Download this section as .docx"
                           onClick={() => handleSectionDownload(result.document.id, result.sectionHeading!)}
                           data-testid={`button-download-section-card-${result.card.id}`}
                         >
@@ -441,6 +470,7 @@ export default function SearchPage() {
                   <Button
                     size="icon"
                     variant="ghost"
+                    title="Download full file"
                     onClick={() => handleDownload(result.document.id, result.document.originalFilename)}
                     data-testid={`button-download-card-${result.card.id}`}
                   >
@@ -486,13 +516,12 @@ export default function SearchPage() {
       )}
 
       {!hasSearched && (
-        <div className="flex flex-col items-center justify-center py-16 text-center">
-          <div className="w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center mb-4">
-            <Search className="w-8 h-8 text-primary/50" />
+        <div className="flex flex-col items-center justify-center py-12 text-center">
+          <div className="w-14 h-14 rounded-full bg-primary/10 flex items-center justify-center mb-3">
+            <Search className="w-7 h-7 text-primary/50" />
           </div>
-          <h3 className="font-medium text-lg mb-1">Ready to search</h3>
-          <p className="text-sm text-muted-foreground max-w-md">
-            Search by document or by individual card. Use "AT" or "A2" for "answer to". AI matches synonyms — "china heg" finds "china rise", "dedev" finds degrowth.
+          <p className="text-sm text-muted-foreground max-w-sm">
+            Search by doc or by card. Synonyms work: cap good, dedev, china heg, AT tradeoff.
           </p>
         </div>
       )}

@@ -8,10 +8,18 @@ import OpenAI from "openai";
 import JSZip from "jszip";
 import { storage } from "./storage";
 
-const openai = new OpenAI({
-  apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
-  baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
-});
+const openai: OpenAI | null =
+  process.env.AI_INTEGRATIONS_OPENAI_API_KEY || process.env.OPENAI_API_KEY
+    ? new OpenAI({
+        apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY || process.env.OPENAI_API_KEY,
+        baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
+      })
+    : null;
+
+function getOpenAI(): OpenAI {
+  if (!openai) throw new Error("AI not configured. Set OPENAI_API_KEY or AI_INTEGRATIONS_OPENAI_API_KEY.");
+  return openai;
+}
 
 const DEBATE_TERMINOLOGY = `
 Public Forum Debate terminology you MUST understand:
@@ -326,7 +334,7 @@ async function generateAiKeywordsAndTags(
     const headings = sections.map((s) => s.heading).filter(Boolean).slice(0, 12).join(", ");
     const preview = sections.map((s) => s.content).join(" ").slice(0, 800);
 
-    const response = await openai.chat.completions.create({
+    const response = await getOpenAI().chat.completions.create({
       model: "gpt-5-nano",
       messages: [
         {
@@ -641,7 +649,7 @@ export async function registerRoutes(
         return `ID:${d.doc.id} | ${d.doc.originalFilename} | Tags: ${d.doc.tags.join(", ")}\n${sectionText}`;
       }).join("\n---\n");
 
-      const response = await openai.chat.completions.create({
+      const response = await getOpenAI().chat.completions.create({
         model: "gpt-5-nano",
         messages: [
           {
@@ -706,7 +714,7 @@ Return ONLY JSON: {"summaries": [{"id": number, "summary": "sentence", "sectionH
         })
       );
 
-      const response = await openai.chat.completions.create({
+      const response = await getOpenAI().chat.completions.create({
         model: "gpt-5-nano",
         messages: [
           {
@@ -817,7 +825,7 @@ Order by relevance. Only include truly relevant docs.`,
         `${d.filename} (${d.cardCount} cards) | Sections: ${d.sections.join(", ")}`
       ).join("\n");
 
-      const aiResponse = await openai.chat.completions.create({
+      const aiResponse = await getOpenAI().chat.completions.create({
         model: "gpt-5-nano",
         messages: [
           {

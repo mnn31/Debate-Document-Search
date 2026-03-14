@@ -40,7 +40,7 @@ function App() {
             <div className="flex flex-col flex-1 min-w-0">
               <header className="flex items-center gap-2 p-3 border-b bg-background/80 backdrop-blur-sm sticky top-0 z-50">
                 <SidebarTrigger data-testid="button-sidebar-toggle" />
-                <h1 className="text-sm font-semibold text-muted-foreground tracking-wide uppercase">Debate Evidence Vault</h1>
+                <h1 className="text-sm font-semibold text-muted-foreground tracking-wide uppercase">PF Vault</h1>
               </header>
               <main className="flex-1 overflow-auto">
                 <Router />
