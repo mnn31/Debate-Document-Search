@@ -1,94 +1,116 @@
-# PF Vault - Debate Evidence Manager
+# How to run PF Vault on Replit
 
-## Overview
-AI-powered evidence management tool for Public Forum Debate. Upload .docx evidence files, get auto-tags and AI keyword indexing for instant semantic search. Opponent case analyzer breaks down argument structure (UQ → L → IL → !) and finds typed responses (NUQ, NL, L/T, N!, !/T) from your evidence library.
+Follow these steps to run the app on [Replit](https://replit.com).
 
-## Architecture
-- **Frontend**: React + Vite + Tailwind CSS + shadcn/ui + wouter routing + TanStack Query
-- **Backend**: Express.js + PostgreSQL (Drizzle ORM)
-- **AI**: OpenAI via Replit AI Integrations (gpt-5-nano for speed-optimized search)
-- **File Parsing**: mammoth.js for .docx to HTML/text extraction
-- **File Upload**: multer for multipart form handling
+---
 
-## Debate Terminology (DEBATE_TERMINOLOGY constant in routes.ts)
-- UQ/U = Uniqueness (status quo), L = Link, IL = Internal Link, ! = Impact
-- NUQ = Nonunique, NL = No Link, L/T = Link Turn, N! = No Impact, !/T = Impact Turn
-- Common abbreviations: heg=hegemony, cap=capitalism, dedev=degrowth, prolif=proliferation, nuke war=nuclear war, SCS=South China Sea, china rise=china heg
-- All AI prompts include this terminology for consistent debate-aware responses
+## 1. Open the project
 
-## Search Architecture (Multi-Layer)
-1. **Upload-time AI indexing**: AI generates 30 debate-specific keywords + 5-8 auto-tags (including abbreviations, synonyms, argument types, impact chains)
-2. **Instant keyword search** (`POST /api/search`): Multi-layer PostgreSQL search with weighted ranking — filename gets quadratic multi-term match bonus, full-phrase matching in tags/keywords gets extra boost
-3. **AI semantic search** (`POST /api/search/semantic`): AI analyzes query against library metadata, understands debate synonyms (china heg = china rise)
-4. **AI summaries** (`POST /api/search/ai-enhance`): After results shown, AI generates per-result contextual summaries
-5. Frontend runs keyword + semantic in parallel, shows results immediately, loads summaries async
+Open your PF Vault Repl (or fork/clone it into a new Repl).
 
-## Key Features
-1. **Upload .docx files** — auto-tagged by AI, no manual tagging needed
-2. **AI-powered semantic search** — finds evidence by concept, not just keywords
-3. **Section-level indexing** — parses headings for granular search
-4. **Original file download** — preserves all formatting
-5. **Opponent case analyzer** — parses opponent case into cards/sections, breaks down each contention's UQ/L/IL/! structure, finds typed responses (NUQ/NL/L/T/N!/!/T) with card-level evidence from library, groups into response paths (no double-turning), download all responses as .docx
-6. **AI keyword indexing** — 30 keywords per doc at upload time for instant search
-7. **Auto-tagging** — AI generates 5-8 categorization tags automatically on upload
-8. **Re-index** — manual re-index button regenerates keywords AND auto-tags
-9. **Evidence card detection** — parses individual cards with TAG/CITE/BODY structure; detects analytics (subheaders without evidence body)
-10. **Card viewer** — `/documents/:id` shows all parsed cards per document
-11. **Recut signature editor** — add "recut [name]" to end of card citations for attribution
-12. **Card search** — search within individual evidence cards, toggle between document and card search modes
-13. **AT/A2 synonym expansion** — "AT tradeoff" auto-expands to "answer to tradeoff" at search time
+---
 
-## Database Schema
-- `users` - basic user table (unused currently)
-- `documents` - uploaded files with tags, extracted text, AI keywords, search index
-- `document_sections` - parsed sections (by headings) for granular search
-- `evidence_cards` - individual parsed cards with tag/cite/body, isAnalytic flag, customTag/customCite for user edits, sectionHeading for section context
+## 2. Set Secrets (environment variables)
 
-## Important: AI Token Limits
-- gpt-5-nano uses ~88% of completion tokens for internal reasoning
-- Always set `max_completion_tokens` to at least 4096 for keyword generation
-- Do NOT use `response_format: { type: "json_object" }` — causes empty responses
-- Strip markdown fences before JSON parsing; use `parseAiJson()` helper with regex fallback
+Replit uses **Secrets** instead of a `.env` file. Do **not** put API keys in code or in a committed `.env` file.
 
-## File Structure
-- `shared/schema.ts` - Drizzle schema definitions
-- `server/db.ts` - Database connection
-- `server/storage.ts` - CRUD operations with search ranking (quadratic filename boost)
-- `server/routes.ts` - API endpoints, DEBATE_TERMINOLOGY constant, AI prompts
-- `client/src/pages/` - Search, Library, Upload, Opponent, Document (card viewer) pages
-- `client/src/components/app-sidebar.tsx` - Navigation sidebar
-- `uploads/` - Stored .docx files (filesystem)
+1. Click the **padlock (Secrets)** icon in the left sidebar (or Tools → Secrets).
+2. Add these keys:
 
-## API Endpoints
-- `POST /api/documents/upload` - Upload .docx, triggers async AI indexing + auto-tagging
-- `GET /api/documents` - List all documents (lightweight, includes indexing status)
-- `GET /api/documents/:id` - Get document with sections
-- `GET /api/documents/:id/download` - Download original .docx
-- `PATCH /api/documents/:id/tags` - Update document tags
-- `DELETE /api/documents/:id` - Delete document
-- `POST /api/search` - Instant keyword/tag search (no AI call)
-- `POST /api/search/semantic` - AI semantic search
-- `POST /api/search/ai-enhance` - Generate AI summaries for results
-- `POST /api/documents/:id/reindex` - Regenerate AI keywords AND auto-tags
-- `POST /api/analyze-opponent-case` - Parse opponent case into cards, break down contentions, find typed responses with card-level evidence, group into response paths
-- `POST /api/download-responses` - Download selected response cards as a combined .docx
-- `GET /api/documents/:id/cards` - Get all evidence cards for a document
-- `POST /api/documents/:id/reparse-cards` - Re-parse evidence cards from document HTML
-- `PATCH /api/cards/:id/signature` - Update card customTag/customCite (recut signature)
-- `POST /api/search/cards` - Search within individual evidence cards
-- `POST /api/documents/reparse-all-cards` - Re-parse cards for ALL documents at once
-- `GET /api/documents/:id/download-section?heading=...` - Download a specific section as .docx with formatting preserved
+| Secret name         | Value | Required |
+|---------------------|-------|----------|
+| `DATABASE_URL`      | Your PostgreSQL connection string (see below). | Yes |
+| `OPENAI_API_KEY`    | Your OpenAI API key (`sk-...` from [platform.openai.com/api-keys](https://platform.openai.com/api-keys)). | No (app works without it; needed for AI features) |
 
-## Search Architecture Details
-- Section heading matches (all query terms in one heading) get +800 rank bonus
-- Card tag match count per document gets scaled bonus (up to 10 matches × 60)
-- Section heading match count per document gets scaled bonus (up to 10 matches × 80)
-- Section headings are normalized (colons, dashes stripped) for matching "AT tradeoff" → "AT: FTC Tradeoff"
-- Evidence card parser: h1-h2 = section dividers (skipped), h3 = section divider unless followed by cite, h4+ = card tags; `<p>` with bold/underline also treated as tags
-- Card search uses stored `sectionHeading` on each card (not document-level lookup) with +500 rank bonus; cards belong to their section and are prioritized when section name matches query
-- jszip used for section download: extracts paragraphs from original .docx XML between heading boundaries
+**Getting a database on Replit**
 
-## Environment
-- Uses Replit AI Integrations for OpenAI (no API key needed)
-- PostgreSQL database via DATABASE_URL
-- File uploads stored in `uploads/` directory
+- **Replit Postgres:** In the Repl, use the **Database** (Postgres) tool. Replit will create a DB and give you a connection URL. Copy it and add it as the `DATABASE_URL` Secret.  
+  See [Replit Docs: PostgreSQL](https://docs.replit.com/cloud-services/storage-and-databases/postgresql-on-replit).
+- **External (Neon, Supabase, etc.):** Create a PostgreSQL database, copy its connection URL, and paste it as the `DATABASE_URL` Secret.
+
+---
+
+## 3. Install and set up the database
+
+In the Replit **Shell** (or Console), run:
+
+```bash
+npm install
+npm run db:push
+```
+
+- `db:push` creates or updates the tables in the database.
+
+---
+
+## 4. (Optional) Load preload files and verify OpenAI
+
+If you have a `preload-files/` folder with `.docx` files:
+
+```bash
+npm run seed
+```
+
+If you set `OPENAI_API_KEY` and want to confirm it works:
+
+```bash
+npm run verify:openai
+```
+
+You should see: `OpenAI API key is valid. Model: gpt-4o-mini`.
+
+---
+
+## 5. Run the app
+
+In the Shell:
+
+```bash
+npm run dev
+```
+
+Replit will assign a **PORT** automatically; the app uses `process.env.PORT` or defaults to `5000`. Replit usually opens a **Webview** or shows a “Open website” link. Use that URL to open PF Vault in the browser.
+
+If the app doesn’t open:
+
+- Check the Shell for the printed URL (e.g. `http://0.0.0.0:5000`).
+- Use Replit’s “Open website” / “Webview” so Replit routes the correct port.
+
+---
+
+## 6. Optional: copy test-files into uploads
+
+If you have a `test-files/` folder and want every file in one folder (`uploads/`) with original naming:
+
+```bash
+npm run copy:test-to-uploads
+```
+
+To refresh what’s in the app from `test-files/` (path-based names):
+
+```bash
+npm run preload:sync
+npm run seed
+```
+
+---
+
+## Quick reference (Replit)
+
+| Step              | Command / action |
+|-------------------|-------------------|
+| Set API key & DB   | Secrets: `OPENAI_API_KEY`, `DATABASE_URL` |
+| Install            | `npm install` |
+| Create/update DB    | `npm run db:push` |
+| Load preload docs  | `npm run seed` |
+| Verify OpenAI      | `npm run verify:openai` |
+| Run app            | `npm run dev` → open Replit Webview / URL |
+
+---
+
+## Troubleshooting
+
+- **“DATABASE_URL is required”** — Add `DATABASE_URL` in Secrets with a valid PostgreSQL connection string.
+- **“OpenAI API error” / 401** — Add or fix `OPENAI_API_KEY` in Secrets; run `npm run verify:openai` to test.
+- **Blank or “invalid response” in browser** — Check the Shell for errors (e.g. missing DB or crashed server). Ensure you’re opening the URL Replit shows for the app (correct port).
+- **Replit uses a different port** — The app reads `PORT` from the environment; Replit sets this automatically. You don’t need to change it.

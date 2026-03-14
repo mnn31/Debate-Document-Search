@@ -9,7 +9,10 @@
     "start": "NODE_ENV=production node dist/index.cjs",
     "check": "tsc",
     "db:push": "drizzle-kit push",
-    "seed": "tsx script/seed-from-uploads.ts"
+    "seed": "tsx script/seed-from-uploads.ts",
+    "preload:sync": "tsx script/sync-preload-from-test-files.ts",
+    "copy:test-to-uploads": "tsx script/copy-test-files-to-uploads.ts",
+    "verify:openai": "tsx script/verify-openai.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

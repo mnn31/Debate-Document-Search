@@ -215,6 +215,7 @@ export async function registerRoutes(
   app: Express
 ): Promise<Server> {
 
+  // Upload: store file on disk with unique name; display name in app is req.file.originalname (originalFilename).
   app.post("/api/documents/upload", upload.single("file"), async (req, res) => {
     try {
       if (!req.file) {

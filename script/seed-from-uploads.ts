@@ -1,7 +1,10 @@
 /**
  * Preload the database from preload-files/ (all .docx).
- * Copies each file into uploads/, creates document + sections + cards, then runs AI indexing if OPENAI_API_KEY is set.
+ * - Copies each file into uploads/ using the same name as in preload-files/ (original naming; one folder).
+ * - Creates document + sections + cards; the display name in the app is originalFilename (the name in preload-files/).
+ * - If OPENAI_API_KEY is set, runs AI keyword/tag indexing per document.
  * Run: npm run seed   (after setting DATABASE_URL and optionally OPENAI_API_KEY in .env)
+ * To refresh preload-files from test-files with folder-based names: npm run preload:sync first.
  */
 import "dotenv/config";
 import path from "path";
@@ -14,9 +17,9 @@ import { generateAiKeywordsAndTags, buildSearchIndex } from "../server/routes";
 const PRELOAD_DIR = path.resolve("preload-files");
 const UPLOADS_DIR = path.resolve("uploads");
 
-function uniqueFilename(originalName: string): string {
-  const ext = path.extname(originalName) || ".docx";
-  return `${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`;
+/** Safe filename for uploads: use preload name as-is (path already flattened to "Folder - File.docx"). */
+function storageFilenameFromPreload(originalName: string): string {
+  return originalName.replace(/[/\\]/g, " - ");
 }
 
 async function main() {
@@ -65,7 +68,7 @@ async function main() {
     const srcPath = path.join(PRELOAD_DIR, originalName);
     if (!fs.existsSync(srcPath) || !fs.statSync(srcPath).isFile()) continue;
 
-    const storageFilename = uniqueFilename(originalName);
+    const storageFilename = storageFilenameFromPreload(originalName);
     const destPath = path.join(UPLOADS_DIR, storageFilename);
     try {
       fs.copyFileSync(srcPath, destPath);
