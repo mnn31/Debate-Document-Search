@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { useToast } from "@/hooks/use-toast";
-import { Upload, FileText, X, Plus, CheckCircle2, AlertCircle } from "lucide-react";
+import { CloudUpload, FileText, X, Plus, CheckCircle2, AlertCircle } from "lucide-react";
 
 export default function UploadPage() {
   const { toast } = useToast();
@@ -130,17 +130,20 @@ export default function UploadPage() {
   };
 
   return (
-    <div className="max-w-3xl mx-auto p-6 space-y-6">
+    <div className="max-w-3xl mx-auto p-6 space-y-6 animate-fade-in">
       <div className="space-y-2">
-        <h2 className="text-2xl font-bold tracking-tight" data-testid="text-page-title">Upload Evidence</h2>
+        <h2 className="text-2xl font-bold tracking-tight flex items-center gap-2" data-testid="text-page-title">
+          <CloudUpload className="w-6 h-6 text-primary shrink-0" />
+          Upload Evidence
+        </h2>
         <p className="text-muted-foreground">
           Upload .docx evidence files. Add tags for better searchability. All formatting is preserved for download.
         </p>
       </div>
 
       <Card
-        className={`border-2 border-dashed transition-colors ${
-          isDragging ? "border-primary bg-primary/5" : "border-muted-foreground/20"
+        className={`border-2 border-dashed transition-all duration-200 ${
+          isDragging ? "border-primary bg-primary/5 scale-[1.01]" : "border-muted-foreground/20"
         }`}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
@@ -148,7 +151,7 @@ export default function UploadPage() {
       >
         <CardContent className="flex flex-col items-center justify-center py-12">
           <div className="w-14 h-14 rounded-full bg-primary/10 flex items-center justify-center mb-4">
-            <Upload className="w-7 h-7 text-primary" />
+            <CloudUpload className="w-7 h-7 text-primary" />
           </div>
           <p className="font-medium mb-1">Drag and drop .docx files here</p>
           <p className="text-sm text-muted-foreground mb-4">or click to browse</p>
@@ -164,8 +167,10 @@ export default function UploadPage() {
           <Button
             variant="secondary"
             onClick={() => fileInputRef.current?.click()}
+            className="gap-2"
             data-testid="button-browse-files"
           >
+            <CloudUpload className="w-4 h-4" />
             Browse Files
           </Button>
         </CardContent>

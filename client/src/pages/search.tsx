@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Search, Download, FileText, Sparkles, AlertCircle, ChevronDown, ChevronUp, MessageSquareQuote, Eye, Layers } from "lucide-react";
+import { FileSearch, Download, FileText, Sparkles, AlertCircle, ChevronDown, ChevronUp, MessageSquareQuote, Eye, Layers } from "lucide-react";
 import { Link } from "wouter";
 
 const QUICK_SEARCHES = ["cap good", "dedev", "AT tradeoff", "!/T", "china heg"];
@@ -190,9 +190,12 @@ export default function SearchPage() {
   const activeResults = searchMode === "cards" ? cardResults : results;
 
   return (
-    <div className="max-w-4xl mx-auto p-6 space-y-6">
+    <div className="max-w-4xl mx-auto p-6 space-y-6 animate-fade-in">
       <div className="space-y-1">
-        <h2 className="text-2xl font-bold tracking-tight" data-testid="text-page-title">Search</h2>
+        <h2 className="text-2xl font-bold tracking-tight flex items-center gap-2" data-testid="text-page-title">
+          <FileSearch className="w-6 h-6 text-primary shrink-0" />
+          Search
+        </h2>
         <p className="text-sm text-muted-foreground">
           Type and hit Enter — e.g. cap good, dedev, !/T. Download full file or just the section.
         </p>
@@ -201,7 +204,7 @@ export default function SearchPage() {
       <form onSubmit={handleSearch} className="space-y-3" data-testid="form-search">
         <div className="flex gap-2">
           <div className="relative flex-1">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
+            <FileSearch className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
             <Input
               ref={inputRef}
               type="search"
@@ -262,15 +265,15 @@ export default function SearchPage() {
       </form>
 
       {isSearching && activeResults.length === 0 && (
-        <div className="space-y-4" data-testid="search-loading">
+        <div className="space-y-4 animate-fade-in" data-testid="search-loading">
           {[1, 2, 3].map((i) => (
-            <Card key={i}>
+            <Card key={i} className="overflow-hidden">
               <CardHeader>
-                <Skeleton className="h-5 w-3/4" />
+                <Skeleton className="h-5 w-3/4 animate-pulse" />
               </CardHeader>
               <CardContent className="space-y-2">
-                <Skeleton className="h-4 w-full" />
-                <Skeleton className="h-4 w-2/3" />
+                <Skeleton className="h-4 w-full animate-pulse" />
+                <Skeleton className="h-4 w-2/3 animate-pulse" />
               </CardContent>
             </Card>
           ))}
@@ -289,7 +292,8 @@ export default function SearchPage() {
       {searchMode === "documents" && results.length > 0 && (
         <div className="space-y-4">
           <div className="flex items-center justify-between gap-2 flex-wrap">
-            <p className="text-sm text-muted-foreground" data-testid="text-result-count">
+            <p className="text-sm text-muted-foreground flex items-center gap-1.5" data-testid="text-result-count">
+              <Layers className="w-3.5 h-3.5 opacity-70" />
               {results.length} result{results.length !== 1 ? "s" : ""} found
             </p>
             <div className="flex items-center gap-2">
@@ -314,7 +318,7 @@ export default function SearchPage() {
             const isExpanded = expandedSections.has(result.document.id);
 
             return (
-              <Card key={result.document.id} className="hover-elevate" data-testid={`card-result-${result.document.id}`}>
+              <Card key={result.document.id} className="hover-elevate transition-transform duration-200 hover:-translate-y-0.5 animate-slide-up" style={{ animationDelay: `${index * 45}ms` }} data-testid={`card-result-${result.document.id}`}>
                 <CardHeader className="flex flex-row items-start justify-between gap-2 space-y-0 pb-3">
                   <div className="space-y-1.5 min-w-0 flex-1">
                     <div className="flex items-center gap-2">
@@ -368,7 +372,8 @@ export default function SearchPage() {
                   ) : null}
 
                   {hint && (
-                    <p className="text-xs text-muted-foreground">
+                    <p className="text-xs text-muted-foreground flex items-center gap-1.5">
+                      <Layers className="w-3 h-3 shrink-0 opacity-70" />
                       Look in section: <span className="font-medium text-foreground">{hint}</span>
                     </p>
                   )}
@@ -424,12 +429,13 @@ export default function SearchPage() {
 
       {searchMode === "cards" && cardResults.length > 0 && (
         <div className="space-y-4">
-          <p className="text-sm text-muted-foreground" data-testid="text-result-count">
+          <p className="text-sm text-muted-foreground flex items-center gap-1.5" data-testid="text-result-count">
+            <MessageSquareQuote className="w-3.5 h-3.5 opacity-70" />
             {cardResults.length} card{cardResults.length !== 1 ? "s" : ""} found
           </p>
 
           {cardResults.map((result, index) => (
-            <Card key={result.card.id} className="hover-elevate" data-testid={`card-result-${result.card.id}`}>
+            <Card key={result.card.id} className="hover-elevate transition-transform duration-200 hover:-translate-y-0.5 animate-slide-up" style={{ animationDelay: `${index * 45}ms` }} data-testid={`card-result-${result.card.id}`}>
               <CardHeader className="pb-2">
                 <div className="flex items-start justify-between gap-2">
                   <div className="space-y-1 min-w-0 flex-1">
@@ -504,9 +510,9 @@ export default function SearchPage() {
       )}
 
       {hasSearched && !isSearching && activeResults.length === 0 && lastSearchedMode === searchMode && (
-        <Card>
+        <Card className="animate-slide-up">
           <CardContent className="flex flex-col items-center justify-center py-12 text-center">
-            <FileText className="w-12 h-12 text-muted-foreground/30 mb-4" />
+            <FileSearch className="w-12 h-12 text-muted-foreground/30 mb-4" />
             <p className="font-medium text-muted-foreground">No matching evidence found</p>
             <p className="text-sm text-muted-foreground mt-1">
               Try different keywords or switch between Document and Card search modes
@@ -518,7 +524,7 @@ export default function SearchPage() {
       {!hasSearched && (
         <div className="flex flex-col items-center justify-center py-12 text-center">
           <div className="w-14 h-14 rounded-full bg-primary/10 flex items-center justify-center mb-3">
-            <Search className="w-7 h-7 text-primary/50" />
+            <FileSearch className="w-7 h-7 text-primary/50" />
           </div>
           <p className="text-sm text-muted-foreground max-w-sm">
             Search by doc or by card. Synonyms work: cap good, dedev, china heg, AT tradeoff.

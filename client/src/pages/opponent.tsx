@@ -211,7 +211,10 @@ export default function OpponentPage() {
   return (
     <div className="max-w-4xl mx-auto p-6 space-y-6">
       <div className="space-y-2">
-        <h2 className="text-2xl font-bold tracking-tight" data-testid="text-page-title">Opponent Case Analyzer</h2>
+        <h2 className="text-2xl font-bold tracking-tight flex items-center gap-2" data-testid="text-page-title">
+          <Swords className="w-6 h-6 text-primary shrink-0" />
+          Opponent Case Analyzer
+        </h2>
         <p className="text-muted-foreground">
           Upload your opponent's case file. AI will break down their arguments (UQ → L → IL → !) and find your best responses with actual evidence cards from your library.
         </p>
@@ -282,7 +285,7 @@ export default function OpponentPage() {
       )}
 
       {analyzeMutation.isSuccess && data && (
-        <div className="space-y-6">
+        <div className="space-y-6 animate-fade-in">
 
           {data.responsePaths.length > 0 && (
             <Card data-testid="card-response-paths">
@@ -365,13 +368,14 @@ export default function OpponentPage() {
                 const contentionLinks = links(contention);
 
                 return (
-                  <Card key={i} data-testid={`card-contention-${i}`}>
+                  <Card key={i} className="animate-slide-up transition-transform duration-200 hover:-translate-y-0.5" style={{ animationDelay: `${i * 50}ms` }} data-testid={`card-contention-${i}`}>
                     <CardHeader
                       className="cursor-pointer pb-2"
                       onClick={() => toggleContention(i)}
                     >
                       <div className="flex items-center justify-between">
                         <CardTitle className="text-base flex items-center gap-2">
+                          <MessageSquareQuote className="w-4 h-4 text-primary shrink-0" />
                           <Badge variant="outline" className="font-mono shrink-0">C{i + 1}</Badge>
                           <span data-testid={`text-contention-name-${i}`}>{contention.name}</span>
                         </CardTitle>

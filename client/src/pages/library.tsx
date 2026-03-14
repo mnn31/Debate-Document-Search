@@ -19,7 +19,7 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { downloadUrl } from "@/lib/download";
-import { Download, Trash2, FileText, Tag, Plus, X, FolderOpen, Brain, RefreshCw, Eye } from "lucide-react";
+import { Download, Trash2, FileText, Tag, Plus, X, FolderOpen, Brain, RefreshCw, Eye, Bookmark, Calendar, Pencil } from "lucide-react";
 import { Link } from "wouter";
 interface DocumentListItem {
   id: number;
@@ -94,9 +94,12 @@ export default function LibraryPage() {
   };
 
   return (
-    <div className="max-w-4xl mx-auto p-6 space-y-6">
+    <div className="max-w-4xl mx-auto p-6 space-y-6 animate-fade-in">
       <div className="space-y-2">
-        <h2 className="text-2xl font-bold tracking-tight" data-testid="text-page-title">Evidence Library</h2>
+        <h2 className="text-2xl font-bold tracking-tight flex items-center gap-2" data-testid="text-page-title">
+          <Bookmark className="w-6 h-6 text-primary shrink-0" />
+          Evidence Library
+        </h2>
         <p className="text-muted-foreground">
           Manage your uploaded evidence files and their tags.
         </p>
@@ -134,11 +137,12 @@ export default function LibraryPage() {
 
       {documents && documents.length > 0 && (
         <div className="space-y-3">
-          <p className="text-sm text-muted-foreground" data-testid="text-doc-count">
+          <p className="text-sm text-muted-foreground flex items-center gap-1.5" data-testid="text-doc-count">
+            <Bookmark className="w-3.5 h-3.5 opacity-70" />
             {documents.length} file{documents.length !== 1 ? "s" : ""} in library
           </p>
-          {documents.map((doc) => (
-            <Card key={doc.id} data-testid={`card-document-${doc.id}`}>
+          {documents.map((doc, index) => (
+            <Card key={doc.id} className="transition-transform duration-200 hover:-translate-y-0.5 animate-slide-up" style={{ animationDelay: `${index * 40}ms` }} data-testid={`card-document-${doc.id}`}>
               <CardHeader className="flex flex-row items-start justify-between gap-2 space-y-0 pb-2">
                 <div className="space-y-1 min-w-0 flex-1">
                   <CardTitle className="text-base flex items-center gap-2 truncate">
@@ -146,7 +150,8 @@ export default function LibraryPage() {
                     <span className="truncate" data-testid={`text-filename-${doc.id}`}>{doc.originalFilename}</span>
                   </CardTitle>
                   <div className="flex items-center gap-2">
-                    <p className="text-xs text-muted-foreground">
+                    <p className="text-xs text-muted-foreground flex items-center gap-1">
+                      <Calendar className="w-3 h-3 shrink-0 opacity-70" />
                       Uploaded {new Date(doc.uploadedAt).toLocaleDateString()}
                     </p>
                     {doc.indexed ? (
@@ -240,10 +245,11 @@ export default function LibraryPage() {
                     <Button
                       size="sm"
                       variant="ghost"
-                      className="h-6 text-xs"
+                      className="h-6 text-xs gap-1"
                       onClick={() => setEditingTagsId(editingTagsId === doc.id ? null : doc.id)}
                       data-testid={`button-edit-tags-${doc.id}`}
                     >
+                      <Pencil className="w-3 h-3" />
                       {editingTagsId === doc.id ? "Done" : "Edit Tags"}
                     </Button>
                   </div>

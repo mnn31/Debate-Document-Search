@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { downloadUrl } from "@/lib/download";
 import { useToast } from "@/hooks/use-toast";
-import { ArrowLeft, Download, FileText, Check, X, MessageSquareQuote, RefreshCw, Lightbulb, Pen } from "lucide-react";
+import { ArrowLeft, Download, FileText, Check, X, MessageSquareQuote, RefreshCw, Lightbulb, Pen, BookOpen, Layers } from "lucide-react";
 
 interface EvidenceCard {
   id: number;
@@ -116,20 +116,24 @@ export default function DocumentPage() {
   }
 
   return (
-    <div className="max-w-4xl mx-auto p-6 space-y-6">
+    <div className="max-w-4xl mx-auto p-6 space-y-6 animate-fade-in">
       <div className="flex items-center gap-3">
         <Link href="/library">
           <Button variant="ghost" size="icon" data-testid="button-back">
             <ArrowLeft className="w-4 h-4" />
           </Button>
         </Link>
-        <div className="flex-1 min-w-0">
-          <h2 className="text-2xl font-bold tracking-tight truncate" data-testid="text-page-title">
-            {data?.document.originalFilename || "Loading..."}
-          </h2>
-          <p className="text-muted-foreground text-sm">
-            {data ? `${data.cards.length} evidence card${data.cards.length !== 1 ? "s" : ""} detected` : "Loading cards..."}
-          </p>
+        <div className="flex-1 min-w-0 flex items-center gap-2">
+          <BookOpen className="w-6 h-6 text-primary shrink-0" />
+          <div className="min-w-0">
+            <h2 className="text-2xl font-bold tracking-tight truncate" data-testid="text-page-title">
+              {data?.document.originalFilename || "Loading..."}
+            </h2>
+            <p className="text-muted-foreground text-sm flex items-center gap-1.5">
+              <MessageSquareQuote className="w-3.5 h-3.5 opacity-70" />
+              {data ? `${data.cards.length} evidence card${data.cards.length !== 1 ? "s" : ""} detected` : "Loading cards..."}
+            </p>
+          </div>
         </div>
         <div className="flex items-center gap-2">
           <Button
@@ -201,15 +205,18 @@ export default function DocumentPage() {
             const showSectionHeader = card.sectionHeading && card.sectionHeading !== prevCard?.sectionHeading;
 
             return (
-              <div key={card.id}>
+              <div key={card.id} className="animate-slide-up" style={{ animationDelay: `${index * 30}ms` }}>
               {showSectionHeader && (
                 <div className="flex items-center gap-3 pt-4 pb-1" data-testid={`section-header-${index}`}>
                   <div className="h-px flex-1 bg-border" />
-                  <span className="text-xs font-semibold text-primary uppercase tracking-wide">{card.sectionHeading}</span>
+                  <span className="text-xs font-semibold text-primary uppercase tracking-wide flex items-center gap-1.5">
+                    <Layers className="w-3 h-3" />
+                    {card.sectionHeading}
+                  </span>
                   <div className="h-px flex-1 bg-border" />
                 </div>
               )}
-              <Card data-testid={`card-evidence-${card.id}`} className={card.isAnalytic ? "border-dashed" : ""}>
+              <Card data-testid={`card-evidence-${card.id}`} className={`transition-transform duration-200 hover:-translate-y-0.5 ${card.isAnalytic ? "border-dashed" : ""}`}>
                 <CardHeader className="pb-2">
                   <div className="flex items-start justify-between gap-2">
                     <div className="flex-1 min-w-0 space-y-1">
